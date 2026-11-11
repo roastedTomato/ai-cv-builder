@@ -1,0 +1,10 @@
+{
+  "requirement_id": "test-job-001",
+  "company": "示例招聘公司（虚构）",
+  "position": "初级数据分析师",
+  "responsibilities": ["整理业务数据", "编写数据查询与校验脚本"],
+  "must_haves": ["SQL", "数据可视化"],
+  "preferred": ["统计学背景"],
+  "skills": ["Python", "SQL", "数据可视化"],
+  "keywords": ["数据分析", "质量检查"]
+}

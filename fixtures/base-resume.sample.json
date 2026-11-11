@@ -1,0 +1,26 @@
+{
+  "fixture_note": "虚构测试数据，不对应真实个人。",
+  "resume_id": "test-resume-001",
+  "version": "1",
+  "personal": {
+    "name": "测试数据·林知夏",
+    "email": "lin.test@example.invalid",
+    "phone": "000-0000-0000",
+    "location": "测试城市"
+  },
+  "education": [
+    {"id": "edu-001", "school": "示例科技大学（虚构）", "degree": "本科", "major": "计算机科学", "start_date": "2018-09", "end_date": "2022-06", "details": ["课程设计：数据结构与数据库基础"]}
+  ],
+  "work": [
+    {"id": "work-001", "employer": "示例软件工作室（虚构）", "title": "软件开发实习生", "start_date": "2022-07", "end_date": "2023-06", "description": "参与内部工单系统开发。", "achievements": ["使用 Python 编写数据校验脚本。", "与 4 人团队协作完成 2 个内部模块。"]},
+    {"id": "work-002", "employer": "虚构数据实验室（虚构）", "title": "初级数据助理", "start_date": "2023-07", "end_date": "2024-03", "description": "维护测试数据集并编写 SQL 查询。", "achievements": ["整理 12 份测试数据说明文档。"]}
+  ],
+  "projects": [
+    {"id": "project-001", "name": "课程预约小程序（测试项目）", "role": "开发成员", "start_date": "2021-10", "end_date": "2022-04", "description": "为课程设计开发预约原型。", "achievements": ["实现预约记录增删改查。"], "technologies": ["Python", "SQLite"]}
+  ],
+  "skills": [
+    {"id": "skill-001", "name": "Python", "level": "项目使用"},
+    {"id": "skill-002", "name": "SQL", "level": "基础查询"}
+  ],
+  "certificates": []
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job-requirement.schema.json",
+  "title": "招聘要求",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requirement_id", "company", "position", "responsibilities", "must_haves", "preferred", "skills", "keywords"],
+  "properties": {
+    "requirement_id": {"type": "string", "minLength": 1},
+    "company": {"type": ["string", "null"]},
+    "position": {"type": ["string", "null"]},
+    "responsibilities": {"type": "array", "items": {"type": "string"}},
+    "must_haves": {"type": "array", "items": {"type": "string"}},
+    "preferred": {"type": "array", "items": {"type": "string"}},
+    "skills": {"type": "array", "items": {"type": "string"}},
+    "keywords": {"type": "array", "items": {"type": "string"}}
+  }
+}

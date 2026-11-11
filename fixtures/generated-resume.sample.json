@@ -1,0 +1,14 @@
+{
+  "base_resume_id": "test-resume-001",
+  "base_resume_version": "1",
+  "requirement_id": "test-job-001",
+  "personal": {"name": "测试数据·林知夏", "email": "lin.test@example.invalid", "phone": "000-0000-0000", "location": "测试城市"},
+  "summary": [{"text": "具备 Python 脚本与 SQL 查询项目实践，参与内部模块协作。", "content_type": "rewrite", "source_ids": ["work-001", "work-002", "skill-001", "skill-002"]}],
+  "education": [{"source_id": "edu-001", "title": "计算机科学（本科）", "organization": "示例科技大学（虚构）", "start_date": "2018-09", "end_date": "2022-06", "bullets": [{"text": "课程设计涉及数据结构与数据库基础。", "content_type": "rewrite", "source_ids": ["edu-001"]}]}],
+  "work": [{"source_id": "work-001", "title": "软件开发实习生", "organization": "示例软件工作室（虚构）", "start_date": "2022-07", "end_date": "2023-06", "bullets": [{"text": "使用 Python 编写数据校验脚本。", "content_type": "confirmed_fact", "source_ids": ["work-001", "skill-001"]}, {"text": "与 4 人团队协作完成 2 个内部模块。", "content_type": "confirmed_fact", "source_ids": ["work-001"]}]}, {"source_id": "work-002", "title": "初级数据助理", "organization": "虚构数据实验室（虚构）", "start_date": "2023-07", "end_date": "2024-03", "bullets": [{"text": "使用 SQL 查询并维护测试数据，整理 12 份数据说明文档。", "content_type": "rewrite", "source_ids": ["work-002", "skill-002"]}]}],
+  "projects": [{"source_id": "project-001", "title": "课程预约小程序（测试项目）", "organization": "开发成员", "start_date": "2021-10", "end_date": "2022-04", "bullets": [{"text": "使用 Python 和 SQLite 实现预约记录增删改查。", "content_type": "rewrite", "source_ids": ["project-001", "skill-001"]}]}],
+  "skills": [{"source_id": "skill-001", "title": "Python", "organization": "项目使用", "start_date": "", "end_date": "", "bullets": []}, {"source_id": "skill-002", "title": "SQL", "organization": "基础查询", "start_date": "", "end_date": "", "bullets": []}],
+  "certificates": [],
+  "gaps": ["数据可视化", "统计学背景"],
+  "suggestions": ["如具备数据可视化相关经验，请补充并确认后再加入简历。"]
+}

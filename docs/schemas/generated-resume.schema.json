@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "generated-resume.schema.json",
+  "title": "岗位简历",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["base_resume_id", "base_resume_version", "requirement_id", "personal", "summary", "education", "work", "projects", "skills", "certificates", "gaps", "suggestions"],
+  "properties": {
+    "base_resume_id": {"type": "string"},
+    "base_resume_version": {"type": "string"},
+    "requirement_id": {"type": "string"},
+    "personal": {"type": "object", "additionalProperties": false, "required": ["name", "email", "phone", "location"], "properties": {"name": {"type": "string"}, "email": {"type": "string"}, "phone": {"type": "string"}, "location": {"type": "string"}}},
+    "summary": {"$ref": "#/$defs/claims"},
+    "education": {"type": "array", "items": {"$ref": "#/$defs/generatedItem"}},
+    "work": {"type": "array", "items": {"$ref": "#/$defs/generatedItem"}},
+    "projects": {"type": "array", "items": {"$ref": "#/$defs/generatedItem"}},
+    "skills": {"type": "array", "items": {"$ref": "#/$defs/generatedItem"}},
+    "certificates": {"type": "array", "items": {"$ref": "#/$defs/generatedItem"}},
+    "gaps": {"type": "array", "items": {"type": "string"}},
+    "suggestions": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "claims": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["text", "content_type", "source_ids"], "properties": {"text": {"type": "string", "minLength": 1}, "content_type": {"type": "string", "enum": ["confirmed_fact", "rewrite"]}, "source_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}},
+    "generatedItem": {"type": "object", "additionalProperties": false, "required": ["source_id", "title", "organization", "start_date", "end_date", "bullets"], "properties": {"source_id": {"type": "string"}, "title": {"type": "string"}, "organization": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "bullets": {"$ref": "#/$defs/claims"}}}
+  }
+}
