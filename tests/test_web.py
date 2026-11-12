@@ -78,13 +78,16 @@ class WebContractTests(unittest.TestCase):
         page = client.get("/").text
         self.assertIn("未经事实核验", page)
         self.assertNotIn("确认分析内容", page)
-        self.assertIn("完整简历正文", page)
+        self.assertIn("确认生成简历", page)
+        self.assertIn("resume-document", page)
+        self.assertIn('id="generation-progress"', page)
 
     def test_full_local_flow_persists_base_then_resets(self):
         from docx import Document
         from fastapi.testclient import TestClient
         from tempfile import TemporaryDirectory
         from cvbuilder.storage import ResumeStore
+        from cvbuilder.job_storage import JobRecordStore
         client = TestClient(self.web.app, base_url="http://127.0.0.1")
         base = read_json(ROOT / "fixtures/base-resume.sample.json")
         generated = read_json(ROOT / "fixtures/generated-resume.sample.json")
@@ -95,7 +98,7 @@ class WebContractTests(unittest.TestCase):
             doc.add_paragraph("邮箱：li.test@example.com")
             doc.add_paragraph("电话：13800138000")
             doc.save(path)
-            with patch.object(self.web, "store", ResumeStore(Path(folder) / "appdata")), patch.object(self.web.ai, "structure_resume", return_value=base), patch.object(self.web.ai, "generate_resume_from_job_unchecked", return_value=generated):
+            with patch.object(self.web, "store", ResumeStore(Path(folder) / "appdata")), patch.object(self.web, "job_store", JobRecordStore(Path(folder) / "appdata")), patch.object(self.web.ai, "structure_resume", return_value=base), patch.object(self.web.ai, "generate_resume_from_job_unchecked", return_value=generated):
                 imported = client.post("/api/import", files={"file": ("fictional.docx", path.read_bytes(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}).json()
                 self.assertIsNone(client.get("/api/resume").json())
                 self.assertEqual(client.post(f"/api/import/{imported['draft_id']}/confirm", json=imported["draft"]).status_code, 200)
@@ -106,14 +109,62 @@ class WebContractTests(unittest.TestCase):
                 self.assertIsNone(client.get("/api/resume").json())
                 self.assertEqual(client.post("/api/generate", json={"job_text": "虚构测试岗位"}).status_code, 409)
 
+    def test_job_versions_generate_preserve_and_update_in_place(self):
+        from fastapi.testclient import TestClient
+        from tempfile import TemporaryDirectory
+        from cvbuilder.job_storage import JobRecordStore
+        from cvbuilder.storage import ResumeStore
+        base = read_json(ROOT / "fixtures/base-resume.sample.json")
+        generated = read_json(ROOT / "fixtures/generated-resume.sample.json")
+        client = TestClient(self.web.app, base_url="http://127.0.0.1")
+        with TemporaryDirectory() as folder:
+            records = JobRecordStore(Path(folder))
+            base_store = ResumeStore(Path(folder) / "base-data")
+            base_store.save(base)
+            with patch.object(self.web, "job_store", records), patch.object(self.web, "store", base_store), patch.object(self.web.ai, "generate_resume_from_job_unchecked", return_value=generated) as generate:
+                company = client.post("/api/companies", json={"name": "虚构测试公司"}).json()
+                job = client.post(f"/api/companies/{company['id']}/jobs", json={"title": "虚构测试职位", "job_text": "虚构测试招聘要求"}).json()
+                first = client.post(f"/api/jobs/{job['id']}/versions", json={}).json()
+                second = client.post(f"/api/jobs/{job['id']}/versions", json={}).json()
+                self.assertEqual([first["number"], second["number"]], [1, 2])
+                self.assertEqual(first["job_text"], "虚构测试招聘要求")
+                self.assertEqual(generate.call_count, 2)
+                edited_content = {**generated, "summary": [{"text": "虚构测试：用户编辑版本一"}]}
+                updated = client.put(f"/api/jobs/{job['id']}/versions/{first['id']}", json={"resume_content": edited_content, "module_order": first["module_order"], "visual_settings": {"template_id": "template-02", "color": "#80664B", "page_width": "wide"}})
+                self.assertEqual(updated.status_code, 200)
+                self.assertEqual(updated.json()["number"], 1)
+                self.assertEqual(updated.json()["resume_content"]["summary"][0]["text"], "虚构测试：用户编辑版本一")
+                restored = JobRecordStore(Path(folder)).load()["companies"][0]["jobs"][0]["versions"]
+                self.assertEqual([version["number"] for version in restored], [1, 2])
+                self.assertEqual(restored[1]["resume_content"], generated)
+                reset = client.post("/api/reset")
+                self.assertEqual(reset.status_code, 200)
+                self.assertEqual(records.load(), {"companies": []})
+
+    def test_modular_export_honors_requested_order_and_settings(self):
+        from fastapi.testclient import TestClient
+        from docx import Document
+        from io import BytesIO
+        client = TestClient(self.web.app, base_url="http://127.0.0.1")
+        content = {"personal": {"name": "虚构测试候选人", "email": "test@example.invalid", "phone": "000", "location": "测试市"}, "summary": [{"text": "虚构测试简介", "content_type": "rewrite", "source_ids": ["test"]}], "work": [{"title": "虚构测试职位", "organization": "虚构测试公司", "start_date": "2022", "end_date": "2023", "bullets": [{"text": "虚构测试经历", "content_type": "rewrite", "source_ids": ["test"]}]}], "education": []}
+        response = client.post("/api/export", json={"template_id": "template-01", "format": "docx", "resume_content": content, "module_order": ["work", "summary"], "visual_settings": {"template_id": "template-01", "color": "#16766D", "page_width": "wide"}})
+        self.assertEqual(response.status_code, 200)
+        paragraphs = [p.text for p in Document(BytesIO(response.content)).paragraphs]
+        self.assertLess(paragraphs.index("工作经历"), paragraphs.index("个人简介"))
+        self.assertIn("虚构测试经历", "\n".join(paragraphs))
+        self.assertNotIn("{{", "\n".join(paragraphs))
+
     def test_http_page_templates_validation_and_loopback_host(self):
         from fastapi.testclient import TestClient
         client = TestClient(self.web.app, base_url="http://127.0.0.1")
         page = client.get("/")
         self.assertEqual(page.status_code, 200)
         self.assertIn("简历工作台", page.text)
-        self.assertIn('id="generated"', page.text)
-        self.assertNotIn('class="generated-editor"', page.text)
+        self.assertIn('id="resume-document"', page.text)
+        self.assertIn('id="company-list"', page.text)
+        self.assertIn('id="page-width"', page.text)
+        self.assertIn('id="base-progress"', page.text)
+        self.assertNotIn('id="generated"', page.text)
         self.assertEqual(len(client.get("/api/templates").json()), 3)
         invalid = client.put("/api/resume", json={"not": "a resume"})
         self.assertEqual(invalid.status_code, 422)

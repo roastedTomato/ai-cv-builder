@@ -4,6 +4,10 @@ API contract:
 * GET /api/resume -> resume | null; PUT /api/resume -> validated resume
 * DELETE /api/resume, POST /api/reset -> {ok: true}
 * GET /api/templates -> [{id,name}]
+* GET /api/applications -> nested companies, jobs, and saved versions
+* POST /api/companies; POST /api/companies/{id}/jobs
+* POST /api/jobs/{id}/versions generates and persists a modular draft
+* PUT /api/jobs/{id}/versions/{version_id} updates the selected version
 * POST /api/import -> {draft_id,format,draft}; POST /api/import/{id}/confirm -> resume
 * POST /api/generate {job_text} -> unverified editable resume draft
 * POST /api/export {template_id,format,body_text} -> DOCX/PDF download
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tempfile
 import uuid
 from pathlib import Path
@@ -32,7 +37,8 @@ from .cli import ROOT, read_json
 from .importers import ImportErrorBase, extract_text
 from .importers.fields import extract_personal, keep_explicit_skills
 from .storage import ResumeStore
-from .templates import convert_to_pdf, fill_template, fill_template_text
+from .job_storage import JobRecordStore
+from .templates import convert_to_pdf, fill_template, fill_template_text, fill_template_modular
 
 SCHEMAS = ROOT / "docs" / "schemas"
 WEB_DIR = ROOT / "web"
@@ -41,7 +47,23 @@ logger = logging.getLogger("cvbuilder.web")
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 pages = Jinja2Templates(directory=WEB_DIR / "templates")
 store = ResumeStore()
+job_store = JobRecordStore()
 drafts: dict[str, dict[str, Any]] = {}
+RESUME_MODULES = {"summary", "education", "work", "projects", "skills", "certificates"}
+TEMPLATE_IDS = {f"template-{number:02d}" for number in range(1, 4)}
+
+
+def validate_editor_payload(content: Any, order: Any, settings: Any) -> None:
+    """Validate the version envelope without schema/fact-checking generated content."""
+    if not isinstance(content, dict) or not isinstance(order, list) or not all(isinstance(item, str) for item in order) or len(order) != len(set(order)) or not set(order).issubset(RESUME_MODULES) or not isinstance(settings, dict):
+        raise ValueError("简历内容、模块顺序或外观设置无效。")
+    if settings.get("template_id", "template-01") not in TEMPLATE_IDS:
+        raise ValueError("请选择有效模板。")
+    if settings.get("page_width", "standard") not in {"narrow", "standard", "wide"}:
+        raise ValueError("页面宽度设置无效。")
+    color = settings.get("color", "#2C5263")
+    if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+        raise ValueError("主题颜色必须是 HEX 色值。")
 
 
 @app.middleware("http")
@@ -131,8 +153,76 @@ async def delete_resume():
 @app.post("/api/reset")
 async def reset_data():
     store.reset()
+    job_store.reset()
     drafts.clear()
     return {"ok": True}
+
+
+@app.get("/api/applications")
+async def get_applications():
+    return job_store.list()
+
+
+@app.post("/api/companies")
+async def create_company(payload: dict[str, Any]):
+    name = payload.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(422, detail={"code": "validation_error", "message": "请填写公司名称。"})
+    try:
+        return job_store.add_company(name.strip())
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.post("/api/companies/{company_id}/jobs")
+async def create_job(company_id: str, payload: dict[str, Any]):
+    title, job_text = payload.get("title"), payload.get("job_text")
+    if not isinstance(title, str) or not title.strip() or not isinstance(job_text, str) or not job_text.strip():
+        raise HTTPException(422, detail={"code": "validation_error", "message": "请填写职位名称和招聘要求。"})
+    try:
+        return job_store.add_job(company_id, title.strip(), job_text.strip())
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "公司记录不存在。"}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.post("/api/jobs/{job_id}/versions")
+async def create_job_version(job_id: str):
+    state = job_store.load()
+    parent = next(((company, job) for company in state["companies"] for job in company.get("jobs", []) if job.get("id") == job_id), None)
+    job = parent[1] if parent else None
+    if job is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位记录不存在。"})
+    resume = store.load()
+    if not resume:
+        raise HTTPException(409, detail={"code": "resume_required", "message": "请先保存基础简历。"})
+    try:
+        content = ai.generate_resume_from_job_unchecked(resume, job["job_text"])
+    except Exception as exc:
+        logger.error("Resume generation failed type=%s", type(exc).__name__)
+        message = str(exc) if isinstance(exc, (ai.ModelConfigurationError, ai.ModelResponseError)) else "简历生成失败，请检查 API 配置后重试。"
+        raise HTTPException(502, detail={"code": "ai_error", "message": message}) from exc
+    module_order = [key for key in ("summary", "education", "work", "projects", "skills", "certificates") if content.get(key)]
+    return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"})
+
+
+@app.put("/api/jobs/{job_id}/versions/{version_id}")
+async def update_job_version(job_id: str, version_id: str, payload: dict[str, Any]):
+    try:
+        state = job_store.load()
+        located = next(((job, version) for company in state["companies"] for job in company.get("jobs", []) for version in job.get("versions", []) if version.get("id") == version_id and job.get("id") == job_id), None)
+        if located is None:
+            raise KeyError(version_id)
+        content = payload.get("resume_content")
+        order = payload.get("module_order")
+        settings = payload.get("visual_settings")
+        validate_editor_payload(content, order, settings)
+        return job_store.update_version(version_id, content, order, settings)
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
 
 
 @app.post("/api/import")
@@ -238,17 +328,27 @@ async def generate(payload: dict[str, Any]):
 async def export_resume(payload: dict[str, Any]):
     template_id, fmt, resume = payload.get("template_id"), payload.get("format"), payload.get("resume")
     body_text = payload.get("body_text")
+    resume_content = payload.get("resume_content")
+    module_order = payload.get("module_order")
+    visual_settings = payload.get("visual_settings") or {}
     templates = {f"template-{n:02d}": ROOT / "templates" / f"template-{n:02d}.docx" for n in range(1, 4)}
     if template_id not in templates or fmt not in {"docx", "pdf"}:
         raise HTTPException(422, detail={"code": "validation_error", "message": "请选择有效模板和导出格式。"})
-    if body_text is None:
+    if resume_content is not None:
+        try:
+            validate_editor_payload(resume_content, module_order, visual_settings)
+        except ValueError as exc:
+            raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+    elif body_text is None:
         validate(resume, "generated-resume.schema.json")
     elif not isinstance(body_text, str) or len(body_text.strip()) < 3:
         raise HTTPException(422, detail={"code": "validation_error", "message": "请先生成并检查简历正文。"})
     try:
         with tempfile.TemporaryDirectory(prefix="cvbuilder-export-") as folder:
             path = Path(folder) / "resume.docx"
-            if body_text is None:
+            if resume_content is not None:
+                fill_template_modular(templates[template_id], resume_content, module_order, visual_settings, path)
+            elif body_text is None:
                 fill_template(templates[template_id], resume, path)
             else:
                 fill_template_text(templates[template_id], body_text, path)

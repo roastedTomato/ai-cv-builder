@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 import glob
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +213,92 @@ def fill_template_text(template_path: Path, body_text: str, output_path: Path) -
             set_text(paragraph, "\n".join(lines[2:]).strip())
         elif content in headings or re.fullmatch(r"\{\{(?:education|work|projects|skills|certificates)\}\}", content):
             _remove_paragraph(paragraph)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output_path)
+    with zipfile.ZipFile(output_path) as archive:
+        corrupt = archive.testzip()
+        if corrupt:
+            raise RuntimeError(f"生成的 DOCX 包损坏: {corrupt}")
+        all_text = "\n".join(archive.read(name).decode("utf-8", "ignore") for name in archive.namelist() if name.endswith(".xml"))
+        if re.search(r"\{\{[^}]+\}\}", all_text):
+            raise RuntimeError("导出 DOCX 中仍有未替换的占位符")
+    return output_path
+
+
+def _modular_section_text(key: str, value: Any) -> str:
+    if key == "summary":
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            return "\n".join(str(item.get("text", "")).strip() if isinstance(item, dict) else str(item).strip() for item in value if item)
+    if not isinstance(value, list):
+        return str(value).strip() if isinstance(value, str) else ""
+    rendered = []
+    for item in value:
+        if isinstance(item, str):
+            if item.strip(): rendered.append(item.strip())
+            continue
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "") or "").strip()
+        organization = str(item.get("organization", "") or "").strip()
+        dates = " - ".join(str(item.get(key, "")).strip() for key in ("start_date", "end_date") if item.get(key))
+        heading = " · ".join(part for part in (title, organization, dates) if part)
+        bullets = item.get("bullets", [])
+        lines = ["• " + str(b.get("text", "")).strip() for b in bullets if isinstance(b, dict) and str(b.get("text", "")).strip()] if isinstance(bullets, list) else []
+        rendered.append("\n".join(([heading] if heading else []) + lines).strip())
+    return "\n\n".join(item for item in rendered if item)
+
+
+def fill_template_modular(template_path: Path, content: dict[str, Any], module_order: list[str], visual_settings: dict[str, Any], output_path: Path) -> Path:
+    """Render the editable generated-resume sections in the user's selected order."""
+    if output_path.exists():
+        raise FileExistsError(f"目标文件已存在，为避免覆盖请使用新路径: {output_path}")
+    doc = Document(template_path)
+    section_labels = {"summary": "个人简介", "education": "教育经历", "work": "工作经历", "projects": "项目经历", "skills": "技能", "certificates": "证书"}
+    paragraphs = list(doc.paragraphs)
+    values = {
+        "name": str(content.get("personal", {}).get("name", "")) if isinstance(content.get("personal"), dict) else "",
+        "contact": "  ·  ".join(str(content.get("personal", {}).get(key, "")).strip() for key in ("email", "phone", "location") if content.get("personal", {}).get(key)) if isinstance(content.get("personal"), dict) else "",
+    }
+    name_p = next((p for p in paragraphs if p.text.strip() == "{{name}}"), None)
+    contact_p = next((p for p in paragraphs if "{{email}}" in p.text), None)
+    if name_p is not None: name_p.text = values["name"]
+    if contact_p is not None: contact_p.text = values["contact"]
+    groups = {}
+    for key, label in section_labels.items():
+        token = "{{" + key + "}}"
+        heading = next((p for p in paragraphs if p.text.strip() == label or (key == "summary" and p.text.strip() == "SUMMARY")), None)
+        body = next((p for p in paragraphs if p.text.strip() == token), None)
+        text = _modular_section_text(key, content.get(key))
+        if not text or heading is None or body is None:
+            if heading is not None: _remove_paragraph(heading)
+            if body is not None: _remove_paragraph(body)
+            continue
+        body.text = text
+        groups[key] = (heading, body)
+    anchor = contact_p or name_p
+    if anchor is not None:
+        anchor_element = anchor._p
+        for element in (p._element for group in groups.values() for p in group):
+            element.getparent().remove(element)
+        for key in module_order:
+            if key in groups:
+                for paragraph in groups[key]:
+                    anchor_element.addnext(deepcopy(paragraph._p))
+                    anchor_element = anchor_element.getnext()
+    accent = str(visual_settings.get("color", visual_settings.get("accent_color", "#2C5263"))).lstrip("#")
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", accent):
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip() == values["name"] or paragraph.text.strip() in section_labels.values() or paragraph.text.strip() == "SUMMARY":
+                for run in paragraph.runs:
+                    run.font.color.rgb = RGBColor.from_string(accent.upper())
+    width_setting = visual_settings.get("page_width", "standard")
+    widths = {"narrow": 180, "standard": 210, "wide": 240}
+    width = widths.get(width_setting, width_setting)
+    if isinstance(width, (int, float)) and 170 <= width <= 250:
+        for section in doc.sections:
+            section.page_width = Mm(width)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
     with zipfile.ZipFile(output_path) as archive:
