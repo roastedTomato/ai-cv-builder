@@ -186,6 +186,44 @@ def fill_template(template_path: Path, resume: dict[str, Any], output_path: Path
     return output_path
 
 
+def fill_template_text(template_path: Path, body_text: str, output_path: Path) -> Path:
+    """Fill a normalized template with user-edited plain resume text."""
+    if output_path.exists():
+        raise FileExistsError(f"目标文件已存在，为避免覆盖请使用新路径: {output_path}")
+    lines = body_text.strip().splitlines()
+    if len(lines) < 2 or not lines[0].strip() or not lines[1].strip():
+        raise ValueError("简历正文至少需要姓名和联系方式两行")
+    doc = Document(template_path)
+    headings = {"个人简介", "教育经历", "工作经历", "项目经历", "技能", "证书", "SUMMARY"}
+    def set_text(paragraph, value: str) -> None:
+        if paragraph.runs:
+            paragraph.runs[0].text = value
+            for run in paragraph.runs[1:]:
+                run.text = ""
+        else:
+            paragraph.add_run(value)
+    for paragraph in list(doc.paragraphs):
+        content = paragraph.text.strip()
+        if content == "{{name}}":
+            set_text(paragraph, lines[0].strip())
+        elif "{{email}}" in content:
+            set_text(paragraph, lines[1].strip())
+        elif content == "{{summary}}":
+            set_text(paragraph, "\n".join(lines[2:]).strip())
+        elif content in headings or re.fullmatch(r"\{\{(?:education|work|projects|skills|certificates)\}\}", content):
+            _remove_paragraph(paragraph)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output_path)
+    with zipfile.ZipFile(output_path) as archive:
+        corrupt = archive.testzip()
+        if corrupt:
+            raise RuntimeError(f"生成的 DOCX 包损坏: {corrupt}")
+        all_text = "\n".join(archive.read(name).decode("utf-8", "ignore") for name in archive.namelist() if name.endswith(".xml"))
+        if re.search(r"\{\{[^}]+\}\}", all_text):
+            raise RuntimeError("导出 DOCX 中仍有未替换的占位符")
+    return output_path
+
+
 def convert_to_pdf(docx_path: Path) -> Path:
     soffice = find_soffice()
     if not soffice:

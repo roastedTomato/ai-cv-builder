@@ -89,6 +89,22 @@ class PhaseOneTests(unittest.TestCase):
         self.assertEqual(result["education"][0]["title"], "计算机科学（本科）")
         self.assertEqual(result["gaps"], ["数据可视化", "统计学背景"])
 
+    def test_generate_request_redacts_contact_and_restores_it_locally(self):
+        base = fixture("base-resume.sample.json")
+        req = fixture("job-requirement.sample.json")
+        model_result = fixture("generated-resume.sample.json")
+        model_result["personal"] = {key: "" for key in ("name", "email", "phone", "location")}
+        seen = {}
+        def fake_request(name, schema, instructions, payload):
+            seen.update(payload)
+            return model_result
+        with patch("cvbuilder.ai._request", side_effect=fake_request):
+            result = generate_resume(base, req)
+        self.assertEqual(result["personal"], {key: base["personal"][key] for key in ("name", "email", "phone", "location")})
+        self.assertEqual(seen["base_resume"]["personal"]["name"], "")
+        self.assertEqual(seen["base_resume"]["personal"]["email"], "")
+        self.assertEqual(base["personal"]["name"], result["personal"]["name"])
+
     def test_skill_using_project_source_is_relinked_to_explicit_skill_record(self):
         base = fixture("base-resume.sample.json")
         generated = fixture("generated-resume.sample.json")
@@ -199,6 +215,135 @@ class PhaseOneTests(unittest.TestCase):
         self.assertEqual(seen["text"]["format"]["type"], "json_schema")
         self.assertTrue(seen["text"]["format"]["strict"])
         self.assertNotIn("$schema", seen["text"]["format"]["schema"])
+
+    def test_web_generation_skips_local_schema_and_fact_gates(self):
+        from cvbuilder.ai import generate_resume_unchecked
+        base = fixture("base-resume.sample.json")
+        requirement = fixture("job-requirement.sample.json")
+        raw = {"summary": [{"text": "虚构测试：未经核验的 999 项成果"}]}
+        fake = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(raw, ensure_ascii=False))))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            result = generate_resume_unchecked(base, requirement)
+        self.assertEqual(result["summary"], raw["summary"])
+        self.assertEqual(result["personal"]["name"], base["personal"]["name"])
+
+    def test_web_generation_from_raw_job_uses_one_structured_request_with_full_resume(self):
+        from cvbuilder.ai import generate_resume_from_job_unchecked
+        base = fixture("base-resume.sample.json")
+        calls = []
+        raw = {"summary": [{"text": "虚构测试：未经核验的 999 项成果"}]}
+        def create(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(output_text=json.dumps(raw, ensure_ascii=False))
+        fake = SimpleNamespace(responses=SimpleNamespace(create=create))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            result = generate_resume_from_job_unchecked(base, "虚构测试岗位要求")
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(calls[0]["store"])
+        self.assertEqual(calls[0]["text"]["format"]["type"], "json_schema")
+        payload = json.loads(calls[0]["input"])
+        self.assertEqual(payload["base_resume"]["personal"], base["personal"])
+        self.assertEqual(payload["job_requirement"]["job_text"], "虚构测试岗位要求")
+        self.assertEqual(result["summary"], raw["summary"])
+
+    def test_import_structure_sends_full_text_and_contacts(self):
+        from cvbuilder.ai import structure_resume
+        personal = {"name": "虚构测试人", "email": "test@example.com", "phone": "13800138000", "location": "测试市"}
+        seen = {}
+        with patch("cvbuilder.ai._request", side_effect=lambda *args, **kwargs: seen.update(kwargs.get("payload", args[3])) or {}):
+            structure_resume("姓名：虚构测试人\n邮箱：test@example.com", personal)
+        self.assertEqual(seen["personal"], personal)
+        self.assertIn("test@example.com", seen["resume_text"])
+
+    def test_structured_output_schema_removes_unsupported_keywords_recursively(self):
+        from cvbuilder.ai import _structured_output_schema
+        schema = _structured_output_schema(json.loads((ROOT / "docs/schemas/base-resume.schema.json").read_text()))
+        rendered = json.dumps(schema)
+        for keyword in ('"const"', '"minLength"', '"minItems"', '"$schema"', '"$id"'):
+            self.assertNotIn(keyword, rendered)
+        self.assertFalse(schema["additionalProperties"])
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))
+        self.assertFalse(schema["properties"]["personal"]["additionalProperties"])
+        self.assertEqual(set(schema["properties"]["personal"]["required"]), set(schema["properties"]["personal"]["properties"]))
+        self.assertNotIn("fixture_note", schema["properties"])
+        self.assertEqual(schema["properties"]["personal"]["properties"]["summary"]["type"], ["string", "null"])
+
+    def test_optional_null_fields_are_removed_before_local_schema_validation(self):
+        from cvbuilder.ai import _request
+        result = fixture("base-resume.sample.json")
+        result.pop("fixture_note", None)
+        result["personal"]["summary"] = None
+        fake = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(result, ensure_ascii=False))))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            normalized = _request("base_resume", "base-resume.schema.json", "instructions", {})
+        self.assertNotIn("fixture_note", normalized)
+        self.assertNotIn("summary", normalized["personal"])
+
+    def test_import_assigns_nonempty_local_ids_before_schema_validation(self):
+        from cvbuilder.ai import _request
+        result = fixture("base-resume.sample.json")
+        result.pop("fixture_note", None)
+        result["resume_id"] = ""
+        result["version"] = ""
+        for section in ("education", "work", "projects", "skills", "certificates"):
+            for item in result[section]:
+                item["id"] = ""
+        fake = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(result, ensure_ascii=False))))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            normalized = _request("base_resume", "base-resume.schema.json", "instructions", {})
+        validate(normalized, "base")
+        self.assertTrue(normalized["resume_id"].startswith("resume-"))
+        all_ids = [item["id"] for section in ("education", "work", "projects", "skills", "certificates") for item in normalized[section]]
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+
+    def test_import_completes_missing_work_fields_as_reviewable_blanks(self):
+        from cvbuilder.ai import _request
+        result = {"personal": {"name": "", "email": "", "phone": "", "location": ""},
+                  "work": [{"employer": "虚构测试公司", "title": "数据助理"}]}
+        fake = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(result, ensure_ascii=False))))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            normalized = _request("base_resume", "base-resume.schema.json", "instructions", {})
+        validate(normalized, "base")
+        self.assertEqual(normalized["work"][0]["employer"], "虚构测试公司")
+        self.assertEqual(normalized["work"][0]["description"], "")
+        self.assertEqual(normalized["work"][0]["achievements"], [])
+        self.assertTrue(normalized["work"][0]["id"])
+
+    def test_generation_completes_only_source_backed_missing_item_fields(self):
+        from cvbuilder.ai import _request
+        base = fixture("base-resume.sample.json")
+        base["certificates"] = [{"id": "certificate-test-001", "name": "虚构测试证书", "issuer": "测试机构", "date": "2022"}]
+        requirement = fixture("job-requirement.sample.json")
+        result = fixture("generated-resume.sample.json")
+        for section in ("education", "work", "projects", "skills"):
+            for key in ("title", "organization", "start_date", "end_date", "bullets"):
+                result[section][0].pop(key, None)
+        result["certificates"] = [{"source_id": "certificate-test-001"}]
+        fake = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(result, ensure_ascii=False))))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            normalized = _request("generated_resume", "generated-resume.schema.json", "instructions", {"base_resume": base, "job_requirement": requirement})
+        validate(normalized, "generated")
+        check_generated_facts(base, normalized)
+        self.assertEqual(normalized["work"][0]["title"], base["work"][0]["title"])
+        self.assertEqual(normalized["certificates"][0]["title"], "虚构测试证书")
+
+    def test_generation_restores_fixed_source_fields_but_rejects_new_claim_numbers(self):
+        from cvbuilder.ai import _request
+        base = fixture("base-resume.sample.json")
+        requirement = fixture("job-requirement.sample.json")
+        result = fixture("generated-resume.sample.json")
+        result["work"][0].update({"title": "虚构新职位", "organization": "虚构新公司", "start_date": "2099-01"})
+        fake = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(result, ensure_ascii=False))))
+        with patch("cvbuilder.ai._client", return_value=(fake, "test-model")):
+            normalized = _request("generated_resume", "generated-resume.schema.json", "instructions", {"base_resume": base, "job_requirement": requirement})
+        self.assertEqual(normalized["work"][0]["title"], base["work"][0]["title"])
+        self.assertEqual(normalized["work"][0]["organization"], base["work"][0]["employer"])
+        self.assertEqual(normalized["work"][0]["start_date"], base["work"][0]["start_date"])
+        check_generated_facts(base, normalized)
+        normalized["work"][0]["bullets"][0]["text"] = "提升业务 999%。"
+        normalized["work"][0]["bullets"][0]["content_type"] = "rewrite"
+        with self.assertRaisesRegex(ValidationError, "数字"):
+            check_generated_facts(base, normalized)
 
     def test_cli_redacts_api_error_details(self):
         class FakeAuthenticationError(Exception):
