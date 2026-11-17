@@ -6,8 +6,10 @@ API contract:
 * GET /api/templates -> [{id,name}]
 * GET /api/applications -> nested companies, jobs, and saved versions
 * POST /api/companies; POST /api/companies/{id}/jobs
-* POST /api/jobs/{id}/versions generates and persists a modular draft
-* PUT /api/jobs/{id}/versions/{version_id} updates the selected version
+* PATCH/DELETE /api/companies/{id}; PATCH/DELETE /api/jobs/{id}
+* POST /api/jobs/{id}/versions generates V1 once
+* POST /api/jobs/{id}/versions/{version_id}/edits saves the next version
+* DELETE /api/jobs/{id}/versions/{version_id} removes one version
 * POST /api/import -> {draft_id,format,draft}; POST /api/import/{id}/confirm -> resume
 * POST /api/generate {job_text} -> unverified editable resume draft
 * POST /api/export {template_id,format,body_text} -> DOCX/PDF download
@@ -174,6 +176,25 @@ async def create_company(payload: dict[str, Any]):
         raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
 
 
+@app.patch("/api/companies/{company_id}")
+async def rename_company(company_id: str, payload: dict[str, Any]):
+    try:
+        return job_store.rename_company(company_id, payload.get("name"))
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "公司记录不存在。"}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.delete("/api/companies/{company_id}")
+async def delete_company(company_id: str):
+    try:
+        job_store.delete_company(company_id)
+        return {"ok": True}
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "公司记录不存在。"}) from exc
+
+
 @app.post("/api/companies/{company_id}/jobs")
 async def create_job(company_id: str, payload: dict[str, Any]):
     title, job_text = payload.get("title"), payload.get("job_text")
@@ -187,6 +208,25 @@ async def create_job(company_id: str, payload: dict[str, Any]):
         raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
 
 
+@app.patch("/api/jobs/{job_id}")
+async def rename_job(job_id: str, payload: dict[str, Any]):
+    try:
+        return job_store.rename_job(job_id, payload.get("title"))
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位记录不存在。"}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str):
+    try:
+        job_store.delete_job(job_id)
+        return {"ok": True}
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位记录不存在。"}) from exc
+
+
 @app.post("/api/jobs/{job_id}/versions")
 async def create_job_version(job_id: str):
     state = job_store.load()
@@ -194,6 +234,8 @@ async def create_job_version(job_id: str):
     job = parent[1] if parent else None
     if job is None:
         raise HTTPException(404, detail={"code": "not_found", "message": "岗位记录不存在。"})
+    if job.get("has_generated") or job.get("versions"):
+        raise HTTPException(409, detail={"code": "version_exists", "message": "该岗位已生成 V1；请编辑现有版本创建新版。"})
     resume = store.load()
     if not resume:
         raise HTTPException(409, detail={"code": "resume_required", "message": "请先保存基础简历。"})
@@ -204,10 +246,13 @@ async def create_job_version(job_id: str):
         message = str(exc) if isinstance(exc, (ai.ModelConfigurationError, ai.ModelResponseError)) else "简历生成失败，请检查 API 配置后重试。"
         raise HTTPException(502, detail={"code": "ai_error", "message": message}) from exc
     module_order = [key for key in ("summary", "education", "work", "projects", "skills", "certificates") if content.get(key)]
-    return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"})
+    try:
+        return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"})
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "version_exists", "message": str(exc)}) from exc
 
 
-@app.put("/api/jobs/{job_id}/versions/{version_id}")
+@app.post("/api/jobs/{job_id}/versions/{version_id}/edits")
 async def update_job_version(job_id: str, version_id: str, payload: dict[str, Any]):
     try:
         state = job_store.load()
@@ -218,11 +263,20 @@ async def update_job_version(job_id: str, version_id: str, payload: dict[str, An
         order = payload.get("module_order")
         settings = payload.get("visual_settings")
         validate_editor_payload(content, order, settings)
-        return job_store.update_version(version_id, content, order, settings)
+        return job_store.save_edited_version(job_id, version_id, content, order, settings)
     except KeyError as exc:
         raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
     except ValueError as exc:
         raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.delete("/api/jobs/{job_id}/versions/{version_id}")
+async def delete_version(job_id: str, version_id: str):
+    try:
+        job_store.delete_version(job_id, version_id)
+        return {"ok": True}
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
 
 
 @app.post("/api/import")

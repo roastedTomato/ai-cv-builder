@@ -23,6 +23,28 @@ class WebContractTests(unittest.TestCase):
         self.assertIn('host="127.0.0.1"', source)
         self.assertIn("store=False", Path(self.web.ai.__file__).read_text(encoding="utf-8"))
 
+    def test_company_job_and_version_management_routes(self):
+        from fastapi.testclient import TestClient
+        from tempfile import TemporaryDirectory
+        from cvbuilder.job_storage import JobRecordStore
+        client = TestClient(self.web.app, base_url="http://127.0.0.1")
+        with TemporaryDirectory() as folder:
+            records = JobRecordStore(Path(folder))
+            with patch.object(self.web, "job_store", records):
+                company = client.post("/api/companies", json={"name": "虚构公司"}).json()
+                job = client.post(f"/api/companies/{company['id']}/jobs", json={"title": "虚构岗位", "job_text": "虚构要求"}).json()
+                self.assertEqual(client.patch(f"/api/companies/{company['id']}", json={"name": "虚构新公司"}).json()["name"], "虚构新公司")
+                self.assertEqual(client.patch(f"/api/jobs/{job['id']}", json={"title": "虚构新岗位"}).json()["title"], "虚构新岗位")
+                first = records.create_version(company["id"], job["id"], {"summary": "虚构内容"}, ["summary"], {})
+                self.assertEqual(client.delete(f"/api/jobs/{job['id']}/versions/{first['id']}").status_code, 200)
+                self.assertEqual(client.post(f"/api/jobs/{job['id']}/versions", json={}).status_code, 409)
+                self.assertEqual(client.delete(f"/api/jobs/{job['id']}").status_code, 200)
+                self.assertEqual(records.list()["companies"][0]["jobs"], [])
+                other = client.post(f"/api/companies/{company['id']}/jobs", json={"title": "虚构另一岗位", "job_text": "虚构要求"}).json()
+                self.assertEqual(client.delete(f"/api/companies/{company['id']}").status_code, 200)
+                self.assertEqual(records.list(), {"companies": []})
+                self.assertEqual(client.delete(f"/api/jobs/{other['id']}").status_code, 404)
+
     def test_base_resume_writes_are_schema_validated(self):
         resume = read_json(ROOT / "fixtures/base-resume.sample.json")
         with patch.object(self.web.store, "save") as save:
@@ -125,18 +147,20 @@ class WebContractTests(unittest.TestCase):
                 company = client.post("/api/companies", json={"name": "虚构测试公司"}).json()
                 job = client.post(f"/api/companies/{company['id']}/jobs", json={"title": "虚构测试职位", "job_text": "虚构测试招聘要求"}).json()
                 first = client.post(f"/api/jobs/{job['id']}/versions", json={}).json()
-                second = client.post(f"/api/jobs/{job['id']}/versions", json={}).json()
-                self.assertEqual([first["number"], second["number"]], [1, 2])
+                repeat = client.post(f"/api/jobs/{job['id']}/versions", json={})
+                self.assertEqual(repeat.status_code, 409)
+                self.assertEqual(first["number"], 1)
                 self.assertEqual(first["job_text"], "虚构测试招聘要求")
-                self.assertEqual(generate.call_count, 2)
+                self.assertEqual(generate.call_count, 1)
                 edited_content = {**generated, "summary": [{"text": "虚构测试：用户编辑版本一"}]}
-                updated = client.put(f"/api/jobs/{job['id']}/versions/{first['id']}", json={"resume_content": edited_content, "module_order": first["module_order"], "visual_settings": {"template_id": "template-02", "color": "#80664B", "page_width": "wide"}})
+                updated = client.post(f"/api/jobs/{job['id']}/versions/{first['id']}/edits", json={"resume_content": edited_content, "module_order": first["module_order"], "visual_settings": {"template_id": "template-02", "color": "#80664B", "page_width": "wide"}})
                 self.assertEqual(updated.status_code, 200)
-                self.assertEqual(updated.json()["number"], 1)
+                self.assertEqual(updated.json()["number"], 2)
                 self.assertEqual(updated.json()["resume_content"]["summary"][0]["text"], "虚构测试：用户编辑版本一")
                 restored = JobRecordStore(Path(folder)).load()["companies"][0]["jobs"][0]["versions"]
                 self.assertEqual([version["number"] for version in restored], [1, 2])
-                self.assertEqual(restored[1]["resume_content"], generated)
+                self.assertEqual(restored[0]["resume_content"], generated)
+                self.assertEqual(restored[1]["source_version_id"], first["id"])
                 reset = client.post("/api/reset")
                 self.assertEqual(reset.status_code, 200)
                 self.assertEqual(records.load(), {"companies": []})

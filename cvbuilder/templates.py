@@ -105,7 +105,7 @@ def create_templates(output_dir: Path | None = None) -> list[Path]:
         for token in SECTIONS:
             heading = doc.add_paragraph()
             heading.paragraph_format.keep_with_next = True
-            r = heading.add_run(token.upper() if token == "summary" and number == 3 else {
+            r = heading.add_run({
                 "summary": "个人简介", "education": "教育经历", "work": "工作经历",
                 "projects": "项目经历", "skills": "技能", "certificates": "证书"
             }[token])
