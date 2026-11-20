@@ -401,6 +401,87 @@ class CloudStoreTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.a.create_version(company["id"], job["id"], {"summary": "虚构"}, [], {})
 
+    def test_job_update_is_atomic_and_versions_use_current_requirement(self):
+        company = self.a.add_company("虚构测试公司")
+        job = self.a.add_job(company["id"], "虚构测试职位", "虚构测试旧要求")
+        first = self.a.create_version(company["id"], job["id"], {"summary": "虚构测试"}, [], {},
+                                      job_text="虚构测试发起时要求", initial_only=True)
+        changed = self.a.update_job(job["id"], "虚构测试新职位", "虚构测试新要求", 1)
+        self.assertEqual(changed["revision"], 2)
+        with self.assertRaisesRegex(ValueError, "已被其他操作修改"):
+            self.a.update_job(job["id"], "旧页面标题", "旧页面要求", 1)
+        with self.assertRaises(KeyError):
+            self.b.update_job(job["id"], "其他账号", "要求", 0)
+        second = self.a.save_edited_version(job["id"], first["id"], {"summary": "虚构测试编辑"}, [], {})
+        self.assertEqual(first["job_text"], "虚构测试发起时要求")
+        self.assertEqual(second["job_text"], "虚构测试新要求")
+        self.assertEqual(second["source_version_id"], first["id"])
+        self.assertEqual(second["source_version_number"], 1)
+
+    def test_interviews_persist_across_instances_are_scoped_and_cascade(self):
+        company = self.a.add_company("虚构测试公司")
+        job = self.a.add_job(company["id"], "虚构测试职位", "虚构测试要求")
+        version = self.a.create_version(company["id"], job["id"], {"summary": "虚构测试"}, [], {}, initial_only=True)
+        session = self.a.create_interview(job["id"], version["id"])
+        self.assertIsNone(self.b.get_interview(session["id"]))
+        with self.assertRaises(KeyError):
+            self.b.update_interview(session["id"], {"status": "ended"})
+        with self.assertRaises(KeyError):
+            self.b.create_interview(job["id"], version["id"])
+        turn = {"question": "虚构测试问题", "answer": "虚构测试回答"}
+        self.a.update_interview(session["id"], {"status": "answered", "turns": [turn]}, "new")
+        reopened = CloudStore("test-user-a", "test-table", self.resource)
+        self.assertEqual(reopened.get_interview(session["id"])["turns"], [turn])
+        self.assertEqual(reopened.get_interview(session["id"])["job_text"], "虚构测试要求")
+        with self.assertRaisesRegex(ValueError, "状态已更新"):
+            reopened.update_interview(session["id"], {"status": "failed"}, "new")
+        error = {"code": "ai_error", "message": "虚构测试失败"}
+        reopened.update_interview(session["id"], {"status": "failed", "error": error}, "answered")
+        self.assertEqual(reopened.get_interview(session["id"])["error"], error)
+        self.a.delete_version(job["id"], version["id"])
+        self.assertTrue(reopened.get_interview(session["id"])["version_deleted"])
+        self.assertEqual(len(reopened.list_interviews(job["id"])), 1)
+        self.assertNotIn("turns", reopened.list_interviews(job["id"])[0])
+        self.assertNotIn("resume_content", reopened.list_interviews(job["id"])[0])
+        self.a.delete_company(company["id"])
+        self.assertIsNone(reopened.get_interview(session["id"]))
+
+    def test_new_interview_keeps_only_latest_for_job_and_user(self):
+        company = self.a.add_company("虚构测试公司")
+        job = self.a.add_job(company["id"], "虚构测试职位", "虚构测试要求")
+        other = self.a.add_job(company["id"], "另一虚构测试职位", "另一虚构测试要求")
+        version = self.a.create_version(company["id"], job["id"], {"summary": "虚构测试"}, [], {})
+        other_version = self.a.create_version(company["id"], other["id"], {"summary": "虚构测试"}, [], {})
+        first = self.a.create_interview(job["id"], version["id"])
+        unrelated = self.a.create_interview(other["id"], other_version["id"])
+        latest = self.a.create_interview(job["id"], version["id"])
+        self.assertIsNone(self.a.get_interview(first["id"]))
+        self.assertEqual([s["id"] for s in self.a.list_interviews(job["id"])], [latest["id"]])
+        self.assertIsNotNone(self.a.get_interview(unrelated["id"]))
+        self.assertIsNone(self.b.get_interview(latest["id"]))
+
+    def test_interview_size_and_turn_limit_do_not_write(self):
+        company = self.a.add_company("虚构测试公司")
+        job = self.a.add_job(company["id"], "虚构测试职位", "虚构测试要求")
+        version = self.a.create_version(company["id"], job["id"], {"summary": "虚构测试"}, [], {})
+        session = self.a.create_interview(job["id"], version["id"])
+        with self.assertRaisesRegex(ValueError, "12"):
+            self.a.update_interview(session["id"], {"turns": [{}] * 13})
+        with self.assertRaisesRegex(ValueError, "350 KB"):
+            self.a.update_interview(session["id"], {"turns": [{"answer": "虚构测试" * 60000}]})
+        self.assertEqual(self.a.get_interview(session["id"])["turns"], [])
+
+    def test_large_version_snapshot_does_not_consume_turn_record_limit(self):
+        company = self.a.add_company("虚构测试公司")
+        job = self.a.add_job(company["id"], "虚构测试职位", "虚构测试要求")
+        content = {"summary": "虚构测试" * 20000}
+        version = self.a.create_version(company["id"], job["id"], content, [], {})
+        session = self.a.create_interview(job["id"], version["id"])
+        turn = {"answer": "虚构回答" * 10000}
+        updated = self.a.update_interview(session["id"], {"turns": [turn]})
+        self.assertEqual(updated["resume_content"], content)
+        self.assertEqual(updated["turns"], [turn])
+
 
 if __name__ == "__main__":
     unittest.main()

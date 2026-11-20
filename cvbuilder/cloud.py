@@ -25,7 +25,7 @@ from .web import validate, validate_required_base_fields, validate_editor_payloa
 app = FastAPI(title="简历生成平台云端 API", docs_url=None, redoc_url=None, openapi_url=None)
 MAX_UPLOAD = 15 * 1024 * 1024
 SUFFIXES = {"doc", "docx", "pdf"}
-KINDS = {"import", "generate_version", "generate", "export"}
+KINDS = {"import", "extract_job", "generate_version", "generate", "export", "interview_question", "interview_reference", "interview_feedback"}
 
 
 @app.options("/api/{path:path}")
@@ -172,11 +172,14 @@ def add_job(company_id: str, payload: dict[str, Any], store: CloudStore = Depend
 @app.patch("/api/jobs/{job_id}")
 def rename_job(job_id: str, payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
     try:
+        if "job_text" in payload:
+            return store.update_job(job_id, payload.get("title"), payload.get("job_text"), payload.get("expected_revision"))
         return store.rename_job(job_id, payload.get("title"))
     except KeyError:
         fail(404, "not_found", "岗位记录不存在。")
     except ValueError as exc:
-        fail(422, "validation_error", str(exc))
+        conflict = "请刷新后重试" in str(exc) or "并发" in str(exc)
+        fail(409 if conflict else 422, "conflict" if conflict else "validation_error", str(exc))
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -198,7 +201,7 @@ def create_version(job_id: str, store: CloudStore = Depends(cloud_store)):
         fail(409, "version_exists", "该岗位已生成 V1；请编辑现有版本创建新版。")
     if not store.load_resume():
         fail(409, "resume_required", "请先保存基础简历。")
-    return _task(store, "generate_version", {"job_id": job_id})
+    return _task(store, "generate_version", {"job_id": job_id, "job_text": job["job_text"]})
 
 
 @app.post("/api/jobs/{job_id}/versions/{version_id}/edits")
@@ -222,6 +225,109 @@ def delete_version(job_id: str, version_id: str, store: CloudStore = Depends(clo
         fail(404, "not_found", "岗位简历版本不存在。")
 
 
+@app.get("/api/interviews")
+def list_interviews(job_id: str | None = None, store: CloudStore = Depends(cloud_store)):
+    return store.list_interviews(job_id)
+
+
+@app.get("/api/interviews/{session_id}")
+def get_interview(session_id: str, store: CloudStore = Depends(cloud_store)):
+    session = store.get_interview(session_id)
+    if session is None:
+        fail(404, "not_found", "面试记录不存在。")
+    return session
+
+
+@app.post("/api/jobs/{job_id}/versions/{version_id}/interviews")
+def start_interview(job_id: str, version_id: str, store: CloudStore = Depends(cloud_store)):
+    if not store.load_resume():
+        fail(409, "resume_required", "请先保存基础简历。")
+    try:
+        session = store.create_interview(job_id, version_id)
+    except KeyError:
+        fail(404, "not_found", "岗位简历版本不存在。")
+    queued = _task(store, "interview_question", {"session_id": session["id"]})
+    return {"session_id": session["id"], **queued}
+
+
+@app.post("/api/interviews/{session_id}/answers")
+def answer_interview(session_id: str, payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
+    answer = payload.get("answer")
+    if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
+        fail(422, "validation_error", "请填写不超过 4000 字的回答。")
+    session = store.get_interview(session_id)
+    if session is None:
+        fail(404, "not_found", "面试记录不存在。")
+    turns = session.get("turns") or []
+    if session.get("status") != "awaiting_answer" or not turns or turns[-1].get("answer"):
+        fail(409, "invalid_state", "当前没有待回答的问题。")
+    turns[-1] = {**turns[-1], "answer": answer.strip(), "answered_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        store.update_interview(session_id, {"turns": turns, "status": "feedback_pending"}, expected_status="awaiting_answer")
+    except ValueError:
+        fail(409, "conflict", "面试状态已变化，请刷新后重试。")
+    return _task(store, "interview_feedback", {"session_id": session_id})
+
+
+@app.post("/api/interviews/{session_id}/reference")
+def reference_interview(session_id: str, store: CloudStore = Depends(cloud_store)):
+    from .interview_ai import upgrade_saved_reference
+    session = store.get_interview(session_id)
+    if session is None:
+        fail(404, "not_found", "面试记录不存在。")
+    turns = session.get("turns") or []
+    if session.get("status") != "awaiting_answer" or not turns or turns[-1].get("answer"):
+        fail(409, "invalid_state", "当前没有可查看参考答案的题目。")
+    if turns[-1].get("reference_answer"):
+        resume = store.load_resume()
+        upgraded = upgrade_saved_reference(session, resume or {}) if resume else None
+        if upgraded:
+            turns[-1] = {**turns[-1], "reference_answer": upgraded}
+            store.update_interview(session_id, {"turns": turns}, expected_status="awaiting_answer")
+        return {"session_id": session_id, "status": "ready"}
+    try:
+        store.update_interview(session_id, {"status": "reference_pending"}, expected_status="awaiting_answer")
+    except ValueError:
+        fail(409, "conflict", "面试状态已变化，请刷新后重试。")
+    try:
+        return _task(store, "interview_reference", {"session_id": session_id, "turn_id": turns[-1]["id"]})
+    except HTTPException:
+        try:
+            store.update_interview(session_id, {"status": "awaiting_answer"}, expected_status="reference_pending")
+        except (KeyError, ValueError):
+            pass
+        raise
+
+
+@app.post("/api/interviews/{session_id}/next")
+def next_interview(session_id: str, store: CloudStore = Depends(cloud_store)):
+    session = store.get_interview(session_id)
+    if session is None:
+        fail(404, "not_found", "面试记录不存在。")
+    turns = session.get("turns") or []
+    status = session.get("status")
+    if status == "failed" and turns and turns[-1].get("answer") and not turns[-1].get("feedback"):
+        store.update_interview(session_id, {"status": "feedback_pending"}, expected_status="failed")
+        return _task(store, "interview_feedback", {"session_id": session_id})
+    if status not in {"feedback_ready", "failed"} or len(turns) >= 12:
+        fail(409, "invalid_state", "当前不能进入下一题。")
+    store.update_interview(session_id, {"status": "question_pending"}, expected_status=status)
+    return _task(store, "interview_question", {"session_id": session_id})
+
+
+@app.post("/api/interviews/{session_id}/end")
+def end_interview(session_id: str, store: CloudStore = Depends(cloud_store)):
+    session = store.get_interview(session_id)
+    if session is None:
+        fail(404, "not_found", "面试记录不存在。")
+    if session.get("status") == "ended":
+        return session
+    try:
+        return store.update_interview(session_id, {"status": "ended"}, expected_status=session["status"])
+    except ValueError:
+        fail(409, "conflict", "面试状态已变化，请刷新后重试。")
+
+
 @app.post("/api/uploads")
 def create_upload(payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
     filename, size = payload.get("filename"), payload.get("size")
@@ -242,6 +348,14 @@ def import_resume(payload: dict[str, Any], store: CloudStore = Depends(cloud_sto
     if not isinstance(key, str) or not re.fullmatch(rf"uploads/{re.escape(store.user_id)}/[a-f0-9]{{32}}\.(doc|docx|pdf)", key):
         fail(422, "validation_error", "上传文件无效。")
     return _task(store, "import", {"key": key})
+
+
+@app.post("/api/jobs/extract")
+def extract_job(payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
+    key = payload.get("key")
+    if not isinstance(key, str) or not re.fullmatch(rf"uploads/{re.escape(store.user_id)}/[a-f0-9]{{32}}\.(doc|docx|pdf)", key):
+        fail(422, "validation_error", "上传文件无效。")
+    return _task(store, "extract_job", {"key": key})
 
 
 @app.post("/api/import/{draft_id}/confirm")

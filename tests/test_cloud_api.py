@@ -118,6 +118,81 @@ class CloudApiTests(unittest.TestCase):
             cloud.download("fictional-task", store)
         self.assertEqual(denied.exception.status_code, 404)
 
+    def test_phase5_snapshot_queue_and_upload_scope(self):
+        class Store:
+            user_id = "fictional-user-a"
+            def get_job(self, job_id):
+                return ({"id": "fictional-company"}, {"id": job_id, "job_text": "虚构测试快照", "versions": [], "has_generated": False})
+            def load_resume(self):
+                return {"personal": {"name": "虚构测试用户"}}
+        store = Store()
+        with patch("cvbuilder.cloud._task", return_value={"task_id": "fictional-task", "status": "queued"}) as queue:
+            self.assertEqual(cloud.create_version("fictional-job", store)["task_id"], "fictional-task")
+        queue.assert_called_once_with(store, "generate_version", {"job_id": "fictional-job", "job_text": "虚构测试快照"})
+        with self.assertRaises(HTTPException) as denied:
+            cloud.extract_job({"key": "uploads/fictional-user-b/" + "a" * 32 + ".docx"}, store)
+        self.assertEqual(denied.exception.status_code, 422)
+
+    def test_phase5_answer_is_persisted_before_worker_dispatch(self):
+        class Store:
+            user_id = "fictional-user-a"
+            def __init__(self):
+                self.session = {"id": "fictional-session", "status": "awaiting_answer", "turns": [{"id": "fictional-turn", "question": "虚构测试问题", "answer": None}]}
+            def get_interview(self, session_id):
+                return self.session
+            def update_interview(self, session_id, patch, expected_status=None):
+                self.session = {**self.session, **patch}
+                return self.session
+        store = Store()
+        def dispatch(*args):
+            self.assertEqual(store.session["turns"][0]["answer"], "虚构测试回答")
+            return {"task_id": "fictional-task", "status": "queued"}
+        with patch("cvbuilder.cloud._task", side_effect=dispatch):
+            result = cloud.answer_interview("fictional-session", {"answer": "虚构测试回答"}, store)
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(store.session["status"], "feedback_pending")
+
+    def test_reference_can_be_queued_before_answer(self):
+        class Store:
+            user_id = "fictional-user-a"
+            def __init__(self):
+                self.session = {"status": "awaiting_answer", "turns": [{"id": "fictional-turn", "question": "虚构测试问题", "answer": None}]}
+            def get_interview(self, session_id):
+                return self.session
+            def update_interview(self, session_id, patch, expected_status=None):
+                self.session = {**self.session, **patch}
+                return self.session
+        store = Store()
+        with patch("cvbuilder.cloud._task", return_value={"task_id": "fictional-task"}) as queue:
+            result = cloud.reference_interview("fictional-session", store)
+        self.assertEqual(result["task_id"], "fictional-task")
+        self.assertEqual(store.session["status"], "reference_pending")
+        queue.assert_called_once_with(store, "interview_reference", {"session_id": "fictional-session", "turn_id": "fictional-turn"})
+        store.session["status"] = "awaiting_answer"
+        with patch("cvbuilder.cloud._task", side_effect=HTTPException(503, "fictional dispatch failure")):
+            with self.assertRaises(HTTPException):
+                cloud.reference_interview("fictional-session", store)
+        self.assertEqual(store.session["status"], "awaiting_answer")
+
+    def test_generic_reference_is_upgraded_from_confirmed_resume(self):
+        class Store:
+            def __init__(self):
+                self.session = {"status": "awaiting_answer", "turns": [{
+                    "id": "fictional-turn", "category": "简历经历", "question": "请介绍虚构测试项目",
+                    "answer": None, "reference_answer": "参考答题框架（请按真实经历填写）：[真实经历]"}]}
+            def get_interview(self, session_id):
+                return self.session
+            def load_resume(self):
+                return {"projects": [{"name": "虚构测试项目", "role": "开发成员", "description": "维护测试用例。"}]}
+            def update_interview(self, session_id, patch, expected_status=None):
+                self.session = {**self.session, **patch}
+                return self.session
+        store = Store()
+        result = cloud.reference_interview("fictional-session", store)
+        self.assertEqual(result["status"], "ready")
+        self.assertIn("虚构测试项目", store.session["turns"][0]["reference_answer"])
+        self.assertNotIn("参考答题框架", store.session["turns"][0]["reference_answer"])
+
 
 if __name__ == "__main__":
     unittest.main()

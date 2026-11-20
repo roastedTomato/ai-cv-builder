@@ -55,6 +55,12 @@ RESUME_MODULES = {"summary", "education", "work", "projects", "skills", "certifi
 TEMPLATE_IDS = {f"template-{number:02d}" for number in range(1, 4)}
 
 
+def _interview_error(exc: Exception, fallback: str) -> dict[str, str]:
+    if getattr(exc, "status_code", None) == 401:
+        return {"code": "model_auth_error", "message": "OpenAI API key 无效或已失效，请更新配置后重试。"}
+    return {"code": "ai_error", "message": fallback}
+
+
 def validate_editor_payload(content: Any, order: Any, settings: Any) -> None:
     """Validate the version envelope without schema/fact-checking generated content."""
     if not isinstance(content, dict) or not isinstance(order, list) or not all(isinstance(item, str) for item in order) or len(order) != len(set(order)) or not set(order).issubset(RESUME_MODULES) or not isinstance(settings, dict):
@@ -211,11 +217,14 @@ async def create_job(company_id: str, payload: dict[str, Any]):
 @app.patch("/api/jobs/{job_id}")
 async def rename_job(job_id: str, payload: dict[str, Any]):
     try:
+        if "job_text" in payload:
+            return job_store.update_job(job_id, payload.get("title"), payload.get("job_text"), payload.get("expected_revision"))
         return job_store.rename_job(job_id, payload.get("title"))
     except KeyError as exc:
         raise HTTPException(404, detail={"code": "not_found", "message": "岗位记录不存在。"}) from exc
     except ValueError as exc:
-        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+        conflict = "请刷新后重试" in str(exc) or "并发" in str(exc)
+        raise HTTPException(409 if conflict else 422, detail={"code": "conflict" if conflict else "validation_error", "message": str(exc)}) from exc
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -247,7 +256,7 @@ async def create_job_version(job_id: str):
         raise HTTPException(502, detail={"code": "ai_error", "message": message}) from exc
     module_order = [key for key in ("summary", "education", "work", "projects", "skills", "certificates") if content.get(key)]
     try:
-        return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"})
+        return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"}, job_text=job["job_text"])
     except ValueError as exc:
         raise HTTPException(409, detail={"code": "version_exists", "message": str(exc)}) from exc
 
@@ -277,6 +286,161 @@ async def delete_version(job_id: str, version_id: str):
         return {"ok": True}
     except KeyError as exc:
         raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
+
+
+@app.get("/api/interviews")
+async def list_interviews(job_id: str | None = None):
+    return job_store.list_interviews(job_id)
+
+
+@app.get("/api/interviews/{session_id}")
+async def get_interview(session_id: str):
+    session = job_store.get_interview(session_id)
+    if session is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
+    return session
+
+
+def _local_question(session_id: str, expected_status: str) -> dict[str, Any]:
+    from datetime import datetime, timezone
+    from .interview_ai import generate_question
+    session = job_store.get_interview(session_id)
+    resume = store.load()
+    if not resume:
+        raise HTTPException(409, detail={"code": "resume_required", "message": "请先保存基础简历。"})
+    try:
+        generated = generate_question(session, resume)
+        turn = {"id": uuid.uuid4().hex, "question": generated["question"],
+                "category": generated["category"], "reference_answer": generated["reference_answer"],
+                "answer": None, "feedback": None,
+                "follow_up": None, "created_at": datetime.now(timezone.utc).isoformat()}
+        return job_store.update_interview(session_id, {"turns": [*(session.get("turns") or []), turn],
+                                                      "status": "awaiting_answer", "error": None}, expected_status=expected_status)
+    except Exception as exc:
+        logger.error("Interview question failed type=%s", type(exc).__name__)
+        error = _interview_error(exc, "问题与参考答案生成失败，请重试。")
+        job_store.update_interview(session_id, {"status": "failed", "error": error}, expected_status=expected_status)
+        raise HTTPException(502, detail=error) from exc
+
+
+@app.post("/api/jobs/{job_id}/versions/{version_id}/interviews")
+async def start_interview(job_id: str, version_id: str):
+    if not store.load():
+        raise HTTPException(409, detail={"code": "resume_required", "message": "请先保存基础简历。"})
+    try:
+        session = job_store.create_interview(job_id, version_id)
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
+    return _local_question(session["id"], "new")
+
+
+@app.post("/api/interviews/{session_id}/reference")
+async def reference_interview(session_id: str):
+    from .interview_ai import generate_reference_answer, upgrade_saved_reference
+    session = job_store.get_interview(session_id)
+    if session is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
+    turns = session.get("turns") or []
+    if session.get("status") != "awaiting_answer" or not turns or turns[-1].get("answer"):
+        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前没有可查看参考答案的题目。"})
+    if turns[-1].get("reference_answer"):
+        resume = store.load()
+        upgraded = upgrade_saved_reference(session, resume or {}) if resume else None
+        if upgraded:
+            turns[-1] = {**turns[-1], "reference_answer": upgraded}
+            return job_store.update_interview(session_id, {"turns": turns}, expected_status="awaiting_answer")
+        return session
+    resume = store.load()
+    if not resume:
+        raise HTTPException(409, detail={"code": "resume_required", "message": "请先保存基础简历。"})
+    try:
+        pending = job_store.update_interview(session_id, {"status": "reference_pending"}, expected_status="awaiting_answer")
+        reference = generate_reference_answer(pending, resume)
+        turns[-1] = {**turns[-1], "reference_answer": reference}
+        return job_store.update_interview(session_id, {"turns": turns, "status": "awaiting_answer", "error": None}, expected_status="reference_pending")
+    except Exception as exc:
+        logger.error("Interview reference failed type=%s", type(exc).__name__)
+        try:
+            job_store.update_interview(session_id, {"status": "awaiting_answer"}, expected_status="reference_pending")
+        except (KeyError, ValueError):
+            pass
+        raise HTTPException(502, detail={"code": "ai_error", "message": "旧面试题的参考答案生成失败，请重试或继续回答。新题目会同时生成问题和参考答案。"}) from exc
+
+
+@app.post("/api/interviews/{session_id}/answers")
+async def answer_interview(session_id: str, payload: dict[str, Any]):
+    from datetime import datetime, timezone
+    from .interview_ai import generate_feedback
+    answer = payload.get("answer")
+    if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
+        raise HTTPException(422, detail={"code": "validation_error", "message": "请填写不超过 4000 字的回答。"})
+    session = job_store.get_interview(session_id)
+    if session is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
+    turns = session.get("turns") or []
+    if session.get("status") != "awaiting_answer" or not turns or turns[-1].get("answer"):
+        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前没有待回答的问题。"})
+    turns[-1] = {**turns[-1], "answer": answer.strip(), "answered_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        session = job_store.update_interview(session_id, {"turns": turns, "status": "feedback_pending"}, expected_status="awaiting_answer")
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "conflict", "message": "面试状态已变化，请刷新后重试。"}) from exc
+    resume = store.load()
+    if not resume:
+        job_store.update_interview(session_id, {"status": "failed"}, expected_status="feedback_pending")
+        raise HTTPException(409, detail={"code": "resume_required", "message": "基础简历已删除，回答已保存。"})
+    try:
+        feedback = generate_feedback(session, resume)
+        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": feedback.get("follow_up")}
+        return job_store.update_interview(session_id, {"turns": turns, "status": "feedback_ready", "error": None}, expected_status="feedback_pending")
+    except Exception as exc:
+        logger.error("Interview feedback failed type=%s", type(exc).__name__)
+        error = _interview_error(exc, "回答反馈生成失败，回答已保存，请重试。")
+        job_store.update_interview(session_id, {"status": "failed", "error": error}, expected_status="feedback_pending")
+        raise HTTPException(502, detail=error) from exc
+
+
+@app.post("/api/interviews/{session_id}/next")
+async def next_interview(session_id: str):
+    session = job_store.get_interview(session_id)
+    if session is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
+    turns = session.get("turns") or []
+    status = session.get("status")
+    if status == "failed" and turns and turns[-1].get("answer") and not turns[-1].get("feedback"):
+        return await answer_interview_retry(session_id, session)
+    if status not in {"feedback_ready", "failed"} or len(turns) >= 12:
+        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前不能进入下一题。"})
+    job_store.update_interview(session_id, {"status": "question_pending"}, expected_status=status)
+    return _local_question(session_id, "question_pending")
+
+
+async def answer_interview_retry(session_id: str, session: dict[str, Any]):
+    from .interview_ai import generate_feedback
+    session = job_store.update_interview(session_id, {"status": "feedback_pending"}, expected_status="failed")
+    try:
+        resume = store.load()
+        if not resume:
+            raise ValueError("基础简历不存在")
+        feedback = generate_feedback(session, resume)
+        turns = session["turns"]
+        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": feedback.get("follow_up")}
+        return job_store.update_interview(session_id, {"turns": turns, "status": "feedback_ready", "error": None}, expected_status="feedback_pending")
+    except Exception as exc:
+        logger.error("Interview feedback retry failed type=%s", type(exc).__name__)
+        error = _interview_error(exc, "回答反馈生成失败，回答已保存，请重试。")
+        job_store.update_interview(session_id, {"status": "failed", "error": error}, expected_status="feedback_pending")
+        raise HTTPException(502, detail=error) from exc
+
+
+@app.post("/api/interviews/{session_id}/end")
+async def end_interview(session_id: str):
+    session = job_store.get_interview(session_id)
+    if session is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
+    if session.get("status") == "ended":
+        return session
+    return job_store.update_interview(session_id, {"status": "ended"}, expected_status=session["status"])
 
 
 @app.post("/api/import")
@@ -349,6 +513,27 @@ async def import_resume(file: UploadFile = File(...)):
         elif type(exc).__name__ == "RateLimitError":
             message = "OpenAI API 请求受限，请检查账户额度或稍后重试。"
         raise HTTPException(502, detail={"code": "ai_error", "message": message}) from exc
+
+
+@app.post("/api/jobs/extract")
+async def extract_job(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".docx", ".doc", ".pdf"}:
+        raise HTTPException(415, detail={"code": "unsupported_format", "message": "仅支持 .docx、.doc 和 PDF。"})
+    with tempfile.TemporaryDirectory(prefix="cvbuilder-job-upload-") as folder:
+        path = Path(folder) / ("upload" + suffix)
+        content = await file.read(15 * 1024 * 1024 + 1)
+        if len(content) > 15 * 1024 * 1024:
+            raise HTTPException(413, detail={"code": "file_too_large", "message": "文件大小不能超过 15 MB。"})
+        path.write_bytes(content)
+        try:
+            extracted = extract_text(path)
+        except ImportErrorBase as exc:
+            raise HTTPException(422, detail={"code": exc.code, "message": str(exc)}) from exc
+    text = extracted.text.strip()
+    if not text:
+        raise HTTPException(422, detail={"code": "no_text", "message": "文件没有可提取的文字；扫描版 PDF 暂不支持。"})
+    return {"text": text, "format": extracted.format}
 
 
 @app.post("/api/import/{draft_id}/confirm")

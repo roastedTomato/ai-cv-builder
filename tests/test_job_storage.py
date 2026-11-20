@@ -1,6 +1,7 @@
 import tempfile
 import json
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -134,6 +135,86 @@ class JobRecordStoreTests(unittest.TestCase):
             self.store.delete_version(other["id"], first["id"])
         with self.assertRaises(ValueError):
             self.store.create_version(company["id"], job["id"], self.content, self.order, self.visual)
+
+    def test_job_update_revision_and_version_requirement_snapshots(self):
+        company, job = self.create_job()
+        first = self.store.create_version(company["id"], job["id"], self.content, self.order, self.visual,
+                                          job_text="虚构测试旧要求")
+        changed = self.store.update_job(job["id"], "虚构测试新职位", "虚构测试新要求", 0)
+        self.assertEqual(changed["revision"], 1)
+        with self.assertRaisesRegex(ValueError, "已被其他操作修改"):
+            self.store.update_job(job["id"], "旧页面标题", "旧页面要求", 0)
+        with self.assertRaises(ValueError):
+            self.store.update_job(job["id"], "虚构测试职位", " ", 1)
+        second = self.store.save_edited_version(job["id"], first["id"], self.content, self.order, self.visual)
+        self.assertEqual(first["job_text"], "虚构测试旧要求")
+        self.assertEqual(second["job_text"], "虚构测试新要求")
+        self.assertEqual(second["source_version_id"], first["id"])
+        self.assertEqual(second["source_version_number"], 1)
+        self.assertEqual(self.store.load()["companies"][0]["jobs"][0]["job_text"], "虚构测试新要求")
+
+    def test_interview_snapshot_survives_version_deletion_and_cascades_with_job(self):
+        company, job = self.create_job()
+        version = self.store.create_version(company["id"], job["id"], self.content, self.order, self.visual)
+        session = self.store.create_interview(job["id"], version["id"])
+        self.store.update_job(job["id"], "虚构新职位", "虚构测试最新要求", 0)
+        turn = {"question": "虚构测试问题", "answer": "虚构测试回答"}
+        saved = self.store.update_interview(session["id"], {"turns": [turn], "status": "answered"}, "new")
+        self.assertEqual(saved["job_text"], "虚构测试招聘要求")
+        self.assertEqual(saved["resume_content"], self.content)
+        with self.assertRaisesRegex(ValueError, "状态已更新"):
+            self.store.update_interview(session["id"], {"status": "failed"}, "new")
+        error = {"code": "ai_error", "message": "虚构测试失败"}
+        self.store.update_interview(session["id"], {"status": "failed", "error": error}, "answered")
+        reopened = JobRecordStore(Path(self.temp.name))
+        self.assertEqual(reopened.get_interview(session["id"])["turns"], [turn])
+        self.assertEqual(reopened.get_interview(session["id"])["error"], error)
+        self.assertNotIn("turns", reopened.list_interviews(job["id"])[0])
+        self.assertNotIn("resume_content", reopened.list_interviews(job["id"])[0])
+        self.store.delete_version(job["id"], version["id"])
+        self.assertTrue(reopened.get_interview(session["id"])["version_deleted"])
+        self.store.delete_job(job["id"])
+        self.assertIsNone(reopened.get_interview(session["id"]))
+
+    def test_new_interview_replaces_previous_session_for_same_job(self):
+        company, job = self.create_job()
+        other = self.store.add_job(company["id"], "另一虚构测试职位", "另一虚构测试要求")
+        version = self.store.create_version(company["id"], job["id"], self.content, self.order, self.visual)
+        other_version = self.store.create_version(company["id"], other["id"], self.content, self.order, self.visual)
+        first = self.store.create_interview(job["id"], version["id"])
+        unrelated = self.store.create_interview(other["id"], other_version["id"])
+        latest = self.store.create_interview(job["id"], version["id"])
+        self.assertIsNone(self.store.get_interview(first["id"]))
+        self.assertEqual([s["id"] for s in self.store.list_interviews(job["id"])], [latest["id"]])
+        self.assertIsNotNone(self.store.get_interview(unrelated["id"]))
+
+    def test_interview_size_and_turn_limit_preserve_previous_state(self):
+        company, job = self.create_job()
+        version = self.store.create_version(company["id"], job["id"], self.content, self.order, self.visual)
+        session = self.store.create_interview(job["id"], version["id"])
+        with self.assertRaisesRegex(ValueError, "12"):
+            self.store.update_interview(session["id"], {"turns": [{}] * 13})
+        with self.assertRaisesRegex(ValueError, "350 KB"):
+            self.store.update_interview(session["id"], {"turns": [{"answer": "虚构测试" * 60000}]})
+        self.assertEqual(self.store.get_interview(session["id"])["turns"], [])
+
+    def test_concurrent_job_update_and_edits_keep_revisions_and_numbers(self):
+        company, job = self.create_job()
+        first = self.store.create_version(company["id"], job["id"], self.content, self.order, self.visual)
+        revision = self.store.load()["companies"][0]["jobs"][0]["revision"]
+        def update(_):
+            try:
+                return self.store.update_job(job["id"], "虚构新职位", "虚构新要求", revision)
+            except ValueError:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            changed = list(pool.map(update, range(2)))
+        self.assertEqual(sum(item is not None for item in changed), 1)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            versions = list(pool.map(lambda _: self.store.save_edited_version(
+                job["id"], first["id"], self.content, self.order, self.visual), range(8)))
+        self.assertEqual(sorted(v["number"] for v in versions), list(range(2, 10)))
+        self.assertTrue(all(v["job_text"] == "虚构新要求" for v in versions))
 
 
 if __name__ == "__main__":

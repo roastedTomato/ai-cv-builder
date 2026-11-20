@@ -1,10 +1,10 @@
 # 悉尼云端测试环境部署
 
-本说明仅供使用**虚构测试数据**的第四阶段环境。资源位于 `ap-southeast-2`；CloudFront 使用 AWS 默认 HTTPS 地址，API Gateway 使用独立 HTTPS 地址。网页不能直接读写 DynamoDB。部署前确认测试人员所在地在 [OpenAI API 支持地区清单](https://help.openai.com/en/articles/5347006-openai-api-supported-countries-and-territories)内；2026-11-16 查询时，澳大利亚和新西兰在清单中。OpenAI API 消费独立于下述 AWS 预算。
+本说明适用于第五阶段继续使用的悉尼测试环境，**只使用虚构测试数据**。资源位于 `ap-southeast-2`；CloudFront 使用 AWS 默认 HTTPS 地址，API Gateway 使用独立 HTTPS 地址。网页不能直接读写 DynamoDB。部署前确认测试人员所在地在 [OpenAI API 支持地区清单](https://help.openai.com/en/articles/5347006-openai-api-supported-countries-and-territories)内；2026-11-16 查询时，澳大利亚和新西兰在清单中。OpenAI API 消费独立于下述 AWS 预算。
 
 ## 部署前费用估算
 
-以下是**规划估算，不是 AWS 报价或消费上限**。假设每月 5 名活跃测试人员、20,000 次 API 调用、200 次后台任务（每次 60 秒、2 GB）、20,000 次静态请求、2 GB CloudFront 出站、DynamoDB 50,000 次读和 20,000 次写、S3 1 GB 临时存储、CloudWatch 日志 1 GB、一个密钥和三条告警。`python3 infra/cost_estimate.py` 对下表规划区间求和，结果为 **US$2.11–8.90/月**。这些区间是预留误差的工作假设，并非已核实的悉尼单价。2026-11-16 已核对下列 AWS 官方定价页面及 OpenAI 支持地区清单；当前账号额度和悉尼区实际报价仍需在部署前，将相同用量输入 [AWS Pricing Calculator](https://calculator.aws/) 核对。估算未包括税、备份增长、超出假设的流量或 OpenAI API。
+以下是**原测试负载的规划估算，不是第五阶段报价或消费上限**。假设每月 5 名活跃测试人员、20,000 次 API 调用、200 次后台任务（每次 60 秒、2 GB）、20,000 次静态请求、2 GB CloudFront 出站、DynamoDB 50,000 次读和 20,000 次写、S3 1 GB 临时存储、CloudWatch 日志 1 GB、一个密钥和三条告警。`python3 infra/cost_estimate.py` 对下表规划区间求和，结果为 **US$2.11–8.90/月**。第五阶段每次面试的出题和反馈会增加后台任务、DynamoDB 读写及 OpenAI 请求，不能直接套用这个区间。部署前按预期测试场次和题数重新估算调用量，并将实际用量输入 [AWS Pricing Calculator](https://calculator.aws/) 核对。区间并非已核实的悉尼单价；估算未包括税、备份增长、超出假设的流量或 OpenAI API。
 
 | 服务 | 月度规划区间（USD） | 主要变量与价格来源 |
 | --- | ---: | --- |
@@ -19,7 +19,7 @@
 | ECR 镜像 | 0.10–0.30 | 镜像大小；[ECR 定价](https://aws.amazon.com/ecr/pricing/) |
 | SNS 与 AWS Budgets | 0.00–0.10 | 告警邮件；[Budgets 定价](https://aws.amazon.com/aws-cost-management/aws-budgets/pricing/) |
 
-CloudFormation 创建一个 **US$50/月** AWS 成本预算，在实际成本达到 80% 或预测达到 100% 时向账单邮箱发信；它**不会自动停机**。SNS 告警订阅邮件需人工确认。OpenAI 需在其平台单独检查项目余额、使用量和限额；不要将 OpenAI 密钥写入参数、仓库或命令行日志。当前 AWS 账号/额度无法从本地环境代查时，应在部署前用 `aws sts get-caller-identity`、Billing/Cost Explorer、Free Tier 页面和 OpenAI 控制台人工确认。
+CloudFormation 创建一个 **US$50/月** AWS 成本预算，在实际成本达到 80% 或预测达到 100% 时向账单邮箱发信；它**不会自动停机**。SNS 告警订阅邮件需人工确认。OpenAI 需在其平台单独检查项目余额、使用量、模型单价和限额；不要将 OpenAI 密钥写入参数、仓库或命令行日志。更新现有环境前，先用 `aws sts get-caller-identity` 确认账号，在 Billing/Cost Explorer 查看当前月和最近完整月的实际成本、预算状态及 DynamoDB、Lambda、S3、CloudFront、CloudWatch 用量，再在 OpenAI 控制台核对同一期间的使用量和费用。按面试题数估算新增请求后，确认剩余额度和预计费用。
 
 ## 创建与发布
 
@@ -33,7 +33,7 @@ python3 infra/publish_site.py --stack <stack-name> --region ap-southeast-2
 
 从堆栈输出读取 `SecretArn`，在 AWS Secrets Manager 控制台把占位随机值替换为实际 OpenAI API 密钥。该密钥仅授予后台 Lambda 读取；不要将值放进 shell 历史或镜像。可使用 [Secrets Manager 控制台](https://docs.aws.amazon.com/secretsmanager/latest/userguide/manage_update-secret-value.html)完成编辑。`publish_site.py` 输出网页 HTTPS 地址；`ApiUrl` 是独立 API 地址，`HostedUiDomain` 是 Cognito 登录地址。网页通过部署生成的 `/static/cloud-config.js` 加载这些公开 ID 和 URL。
 
-后续更新重复执行 `sam build`、`sam deploy` 和 `publish_site.py`。先运行 `sam validate --template-file infra/template.yaml --lint`，查看变更集，尤其确认 DynamoDB 表和密钥不会被替换。容器镜像仅复制应用代码、`web/`、三份规范模板和 Schema，不复制本机 JSON、测试夹具或样例导出。`Dockerfile.cloud` 安装 LibreOffice 与 Noto CJK；云端实际 PDF 仍需按验收步骤确认字体替换及分页。
+后续更新重复执行 `sam build`、`sam deploy` 和 `publish_site.py`。更新第五阶段代码前，运行 `sam validate --template-file infra/template.yaml --lint` 和完整测试，查看 SAM 变更集及资源差异，尤其确认 DynamoDB 表、OpenAI 密钥、Cognito 用户池及临时桶不会被替换或删除。现有 API Lambda 已有 DynamoDB、临时 S3 和后台 Lambda 调用权限；后台 Lambda 已有 DynamoDB、临时 S3 与密钥读取权限，900 秒超时可供招聘文件提取和逐题面试使用。新增任务类型无需扩大 IAM 权限。容器镜像仅复制应用代码、`web/`、三份规范模板和 Schema，不复制本机 JSON、测试夹具或样例导出。`Dockerfile.cloud` 安装 LibreOffice 与 Noto CJK；云端实际 PDF 仍需按验收步骤确认字体替换及分页。
 
 ## 验收与运行
 
@@ -42,6 +42,13 @@ python3 infra/publish_site.py --stack <stack-name> --region ap-southeast-2
 3. 重新调用 API（模拟 Lambda 实例替换），确认版本、模块顺序、外观和任务状态仍在。用接近 15 MB 的**虚构测试文件**验证上传限制；让后台任务失败一次，确认页面显示可理解的失败信息。
 4. 对三份模板分别下载 DOCX/PDF，实际打开或渲染检查中文字体、换行、分页、重叠、截断和残留 `{{...}}`。记录 PDF 转换时间；仅通过自动化单元测试不能代替此项。
 5. 查 CloudWatch 两个 Lambda 日志组和失败告警，确认日志没有简历正文、上传内容或密钥。S3 生命周期为整个临时桶 2 天，覆盖 `uploads/`、`exports/`、`results/`；按 S3 生命周期的异步执行特性复查对象是否到期清理。
+
+第五阶段还需用上述两个虚构账号完成以下验收：
+
+1. 粘贴及上传 DOCX、DOC、文本型 PDF 招聘要求；确认提取文本可编辑，取消或上传失败不覆盖原要求，扫描版 PDF 明确报无可提取文本。修改职位要求后再次读取，确认旧版简历和旧面试保留原要求快照，V1 生成过程中修改要求也不使正文与快照错配。
+2. 从同一版本分别保存两个后续版本，检查来源气泡的分支、键盘操作和窄屏滚动；删除来源版本后，子版本和已有面试记录可读，界面标明来源或关联版本已删除。
+3. 选定版本进行逐题文字面试，覆盖首次出题、回答前展开参考答案、回答、反馈、追问、下一题、结束和最近场次查看。开始同一职位的新面试后确认旧场次删除，其他职位记录保留。刷新页面并重新调用 API，确认问答持久；故意使一次后台任务失败，确认已提交回答保留且页面显示失败状态。跨账号不得读取、更新或删除另一账号的面试及上传任务；删除职位、公司和重置全部数据后检查关联记录清理。
+4. 读取面试任务与 API 日志，只允许记录任务类型和安全错误元数据，不得记录基础简历、岗位正文、回答、反馈或密钥。核对 `uploads/` 文件在提取成功与失败后均及时删除；生命周期仍覆盖滞留对象。最后做现有三模板 DOCX/PDF 的针对性回归检查。
 
 CloudWatch 日志保留 14 天。DynamoDB 开启 PITR，表和密钥设置 `Retain` 以避免删除堆栈时误删测试数据。需要恢复时，在 DynamoDB 控制台选择时间点恢复到**新表**，先验证内容，再更新部署配置指向恢复表；恢复会产生额外费用。运行成本按月在 AWS Cost Explorer 按服务核对，并留意 ECR 镜像、PITR、CloudFront 出站和日志增长。
 

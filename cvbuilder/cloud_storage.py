@@ -103,7 +103,8 @@ class CloudStore:
                 company = company_by_id.get(item["company_id"])
                 if company is not None:
                     job = {**self._record(item), "versions": [],
-                           "has_generated": int(item.get("version_counter", 0)) > 0}
+                           "has_generated": int(item.get("version_counter", 0)) > 0,
+                           "revision": int(item.get("revision", 0))}
                     company["jobs"].append(job)
                     job_by_id[job["id"]] = job
         for item in items:
@@ -156,9 +157,8 @@ class CloudStore:
         company = self._get("COMPANY#" + company_id)
         if company is None or company.get("deleted"):
             raise KeyError(company_id)
-        if not isinstance(job_text, str):
-            raise ValueError("招聘要求必须是文本")
-        job = {"id": uuid.uuid4().hex, "company_id": company_id, "title": self._required_text(title, "职位名称"), "job_text": job_text}
+        job_text = self._required_text(job_text, "招聘要求")
+        job = {"id": uuid.uuid4().hex, "company_id": company_id, "title": self._required_text(title, "职位名称"), "job_text": job_text, "revision": 0}
         _check_item_size({**self._key("JOB#" + job["id"]), **job})
         from botocore.exceptions import ClientError
         try:
@@ -175,20 +175,33 @@ class CloudStore:
                 raise KeyError(company_id) from exc
             raise
         return {"id": job["id"], "title": job["title"], "job_text": job_text,
-                "versions": [], "has_generated": False}
+                "versions": [], "has_generated": False, "revision": 0}
 
-    def rename_job(self, job_id: str, title: str) -> dict[str, Any]:
+    def update_job(self, job_id: str, title: str, job_text: str, expected_revision: int) -> dict[str, Any]:
         from boto3.dynamodb.conditions import Attr
         title = self._required_text(title, "职位名称")
+        job_text = self._required_text(job_text, "招聘要求")
+        if not isinstance(expected_revision, int) or isinstance(expected_revision, bool) or expected_revision < 0:
+            raise ValueError("职位修订号无效")
         self.get_job(job_id)
+        existing = self._get("JOB#" + job_id)
+        if existing is None or existing.get("deleted"):
+            raise KeyError(job_id)
+        if int(existing.get("revision", 0)) != expected_revision:
+            raise ValueError("职位已被其他操作修改，请刷新后重试")
+        updated = {**existing, "title": title, "job_text": job_text, "revision": expected_revision + 1}
+        _check_item_size(updated)
+        condition = Attr("pk").exists() & Attr("deleted").not_exists()
+        condition &= Attr("revision").eq(expected_revision) if "revision" in existing else Attr("revision").not_exists()
         try:
-            self.table.update_item(Key=self._key("JOB#" + job_id),
-                                   UpdateExpression="SET title = :title",
-                                   ExpressionAttributeValues={":title": title},
-                                   ConditionExpression=Attr("pk").exists() & Attr("deleted").not_exists())
+            self.table.put_item(Item=updated, ConditionExpression=condition)
         except self.table.meta.client.exceptions.ConditionalCheckFailedException as exc:
-            raise KeyError(job_id) from exc
+            raise ValueError("职位已被其他操作修改，请刷新后重试") from exc
         return self.get_job(job_id)[1]
+
+    def rename_job(self, job_id: str, title: str) -> dict[str, Any]:
+        job = self.get_job(job_id)[1]
+        return self.update_job(job_id, title, job["job_text"], job["revision"])
 
     def delete_job(self, job_id: str) -> None:
         self.get_job(job_id)
@@ -213,6 +226,15 @@ class CloudStore:
         with self.table.batch_writer() as batch:
             for version in self._all("VERSION#" + job_id + "#"):
                 batch.delete_item(Key=self._key(version["sk"]))
+            for interview in self._all("INTERVIEW#"):
+                if interview.get("job_id") == job_id:
+                    batch.delete_item(Key=self._key(interview["sk"]))
+            for snapshot in self._all("INTERVIEW_SNAPSHOT#"):
+                if snapshot.get("job_id") == job_id:
+                    batch.delete_item(Key=self._key(snapshot["sk"]))
+            for context in self._all("INTERVIEW_CONTEXT#"):
+                if context.get("job_id") == job_id:
+                    batch.delete_item(Key=self._key(context["sk"]))
         self.table.delete_item(Key=self._key("JOB#" + job_id))
 
     def delete_version(self, job_id: str, version_id: str) -> None:
@@ -235,6 +257,7 @@ class CloudStore:
         versions.sort(key=lambda row: row["number"])
         return ({**self._record(company), "jobs": []},
                 {**self._record(job), "versions": versions,
+                 "revision": int(job.get("revision", 0)),
                  "has_generated": int(job.get("version_counter", 0)) > 0 or bool(versions)})
 
     def create_version(self, company_id: str, job_id: str, resume_content: Any,
@@ -259,9 +282,10 @@ class CloudStore:
             number = int(job.get("version_counter", 0)) + 1
             version = {
                 "id": uuid.uuid4().hex, "number": number, "created_at": _now(),
-                "job_text": job_text if job_text is not None else (source["job_text"] if source else job["job_text"]),
+                "job_text": job_text if job_text is not None else job["job_text"],
                 "resume_content": resume_content, "module_order": list(module_order),
                 "visual_settings": dict(visual_settings), "source_version_id": source_version_id,
+                "source_version_number": source["number"] if source else None,
             }
             _check_item_size({**self._key("VERSION#" + job_id + "#" + version["id"]),
                               "job_id": job_id, **version})
@@ -307,6 +331,120 @@ class CloudStore:
         company, _ = self.get_job(job_id)
         return self.create_version(company["id"], job_id, resume_content, module_order,
                                    visual_settings, source_version_id=source_version_id)
+
+    def create_interview(self, job_id: str, version_id: str) -> dict[str, Any]:
+        company, job = self.get_job(job_id)
+        version = next((v for v in job["versions"] if v["id"] == version_id), None)
+        if version is None:
+            raise KeyError(version_id)
+        now = _now()
+        session = {
+            "id": uuid.uuid4().hex, "company_id": company["id"], "company_name": company["name"],
+            "job_id": job_id, "job_title": job["title"], "version_id": version_id,
+            "version_number": version["number"], "status": "new", "turns": [],
+            "created_at": now, "updated_at": now, "revision": 0, "error": None,
+        }
+        snapshot = {"job_id": job_id, "resume_content": version["resume_content"]}
+        context = {"job_id": job_id, "job_text": version["job_text"]}
+        _check_item_size({**self._key("INTERVIEW_SNAPSHOT#" + session["id"]), **snapshot})
+        _check_item_size({**self._key("INTERVIEW_CONTEXT#" + session["id"]), **context})
+        self._checked_interview(session)
+        self._put_new("INTERVIEW_SNAPSHOT#" + session["id"], snapshot)
+        try:
+            self._put_new("INTERVIEW_CONTEXT#" + session["id"], context)
+            self._put_new("INTERVIEW#" + session["id"], session)
+        except Exception:
+            self.table.delete_item(Key=self._key("INTERVIEW_SNAPSHOT#" + session["id"]))
+            self.table.delete_item(Key=self._key("INTERVIEW_CONTEXT#" + session["id"]))
+            raise
+        # A deletion that completed while the session was being written must
+        # not leave a detached interview behind.
+        try:
+            current = self.get_job(job_id)[1]
+            if not any(v["id"] == version_id for v in current["versions"]):
+                raise KeyError(version_id)
+        except KeyError:
+            self.table.delete_item(Key=self._key("INTERVIEW#" + session["id"]))
+            self.table.delete_item(Key=self._key("INTERVIEW_SNAPSHOT#" + session["id"]))
+            self.table.delete_item(Key=self._key("INTERVIEW_CONTEXT#" + session["id"]))
+            raise
+        self._remove_older_interviews(job_id, session["id"], now)
+        return {**session, "job_text": version["job_text"],
+                "resume_content": version["resume_content"], "version_deleted": False}
+
+    def _remove_older_interviews(self, job_id: str, keep_id: str, created_at: str) -> None:
+        """Retain the newest interview for this user's job after a successful start."""
+        older = [item for item in self._all("INTERVIEW#")
+                 if item.get("job_id") == job_id and item["id"] != keep_id
+                 and (item.get("created_at", ""), item["id"]) < (created_at, keep_id)]
+        if not older:
+            return
+        with self.table.batch_writer() as batch:
+            for item in older:
+                for prefix in ("INTERVIEW#", "INTERVIEW_SNAPSHOT#", "INTERVIEW_CONTEXT#"):
+                    batch.delete_item(Key=self._key(prefix + item["id"]))
+
+    def _checked_interview(self, session: dict[str, Any]) -> dict[str, Any]:
+        item = {**self._key("INTERVIEW#" + session["id"]), **session}
+        _check_item_size(item)
+        return session
+
+    def _interview_record(self, item: dict[str, Any]) -> dict[str, Any]:
+        session = {key: value for key, value in item.items() if key not in {"pk", "sk"}}
+        session["revision"] = int(session.get("revision", 0))
+        snapshot = self._get("INTERVIEW_SNAPSHOT#" + session["id"])
+        session["resume_content"] = snapshot.get("resume_content") if snapshot else None
+        context = self._get("INTERVIEW_CONTEXT#" + session["id"])
+        session["job_text"] = context.get("job_text") if context else None
+        session["version_deleted"] = self._get("VERSION#" + session["job_id"] + "#" + session["version_id"]) is None
+        return session
+
+    def get_interview(self, session_id: str) -> dict[str, Any] | None:
+        item = self._get("INTERVIEW#" + session_id)
+        return self._interview_record(item) if item else None
+
+    def list_interviews(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        fields = ("id", "status", "company_id", "company_name", "job_id", "job_title",
+                  "version_id", "version_number", "created_at", "updated_at")
+        rows = [{**{key: item[key] for key in fields},
+                 "version_deleted": self._get("VERSION#" + item["job_id"] + "#" + item["version_id"]) is None}
+                for item in self._all("INTERVIEW#")
+                if job_id is None or item.get("job_id") == job_id]
+        rows.sort(key=lambda row: row["created_at"], reverse=True)
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            latest.setdefault(row["job_id"], row)
+        return list(latest.values())
+
+    def update_interview(self, session_id: str, patch: dict[str, Any], expected_status: str | None = None) -> dict[str, Any]:
+        from boto3.dynamodb.conditions import Attr
+        if not isinstance(patch, dict) or not patch or set(patch) - {"status", "turns", "error"}:
+            raise ValueError("面试更新字段无效")
+        if "error" in patch and patch["error"] is not None and not isinstance(patch["error"], dict):
+            raise ValueError("面试错误信息无效")
+        for _ in range(20):
+            existing = self._get("INTERVIEW#" + session_id)
+            if existing is None:
+                raise KeyError(session_id)
+            if expected_status is not None and existing["status"] != expected_status:
+                raise ValueError("面试状态已更新，请刷新后重试")
+            revision = int(existing.get("revision", 0))
+            updated = {**existing, **patch, "updated_at": _now(), "revision": revision + 1}
+            if not isinstance(updated["status"], str) or not updated["status"]:
+                raise ValueError("面试状态无效")
+            if not isinstance(updated["turns"], list) or len(updated["turns"]) > 12:
+                raise ValueError("面试最多保存 12 道题")
+            _check_item_size(updated)
+            condition = Attr("pk").exists() & Attr("revision").eq(revision)
+            if expected_status is not None:
+                condition &= Attr("status").eq(expected_status)
+            try:
+                self.table.put_item(Item=updated, ConditionExpression=condition)
+                return self._interview_record(updated)
+            except self.table.meta.client.exceptions.ConditionalCheckFailedException:
+                if expected_status is not None:
+                    raise ValueError("面试状态已更新，请刷新后重试")
+        raise ValueError("面试并发写入冲突，请刷新后重试")
 
     def create_task(self, task: dict[str, Any]) -> None:
         if not isinstance(task, dict) or not task.get("id") or not task.get("kind") or not task.get("status"):

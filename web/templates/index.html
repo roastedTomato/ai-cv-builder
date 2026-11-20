@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>简历生成平台</title>
-<link rel="stylesheet" href="/static/style.css?v=workspace-monet-5">
-<script src="/static/cloud-config.js" defer></script><script src="/static/cloud-auth.js?v=phase4-cloud-1" defer></script><script src="/static/app.js?v=workspace-monet-3" defer></script>
+<link rel="stylesheet" href="/static/style.css?v=phase5-tree-2">
+<script src="/static/cloud-config.js" defer></script><script src="/static/cloud-auth.js?v=phase4-cloud-1" defer></script><script src="/static/app.js?v=phase5-tree-1" defer></script>
 </head>
 <body>
 <section id="auth-panel" class="card" hidden><h1>简历工作台</h1><p>请先注册或登录测试账号。</p><button id="auth-login" type="button">注册 / 登录</button><p id="auth-message" role="status"></p></section>
@@ -15,12 +15,15 @@
   <aside class="card navigation">
     <div class="section-heading"><h2>公司与投递</h2><button id="add-company" class="secondary small" type="button">＋ 公司</button></div>
     <form id="company-form" class="compact-form" hidden><input id="company-name" placeholder="公司名称" aria-label="公司名称" required><button type="submit">添加</button></form>
-    <div id="company-list" class="record-list"></div>
-    <div class="nav-group"><div class="section-heading"><h2>目标职位</h2><button id="add-job" class="secondary small" type="button" disabled>＋ 职位</button></div><div id="job-list" class="record-list"></div></div>
-    <div id="job-form-wrap" hidden><h3>添加岗位</h3><form id="job-form" class="compact-form"><input id="job-title" placeholder="职位名称" aria-label="职位名称" required><textarea id="job-text" rows="5" placeholder="粘贴招聘要求" aria-label="招聘要求" required></textarea><button type="submit">保存岗位</button></form></div>
-    <div class="nav-group"><h2>版本记录</h2><div id="version-list" class="record-list"></div></div>
+    <div id="company-list" class="company-tree"></div>
+    <div id="job-form-wrap" hidden><h3>添加岗位</h3><form id="job-form" class="compact-form"><input id="job-title" placeholder="职位名称" aria-label="职位名称" required><textarea id="job-text" rows="12" placeholder="粘贴招聘要求" aria-label="招聘要求" required></textarea><label class="button secondary">上传 DOCX / DOC / PDF<input id="job-upload" type="file" accept=".docx,.doc,.pdf"></label><p id="job-upload-state" class="hint" role="status"></p><button type="submit">检查后保存岗位</button><button id="cancel-job" class="secondary" type="button">取消</button></form></div>
   </aside>
-  <section class="resume-column"><div class="section-heading"><div><h2 id="current-title">选择一个岗位</h2><p id="current-meta" class="hint">从左侧选择公司和岗位，查看简历版本。</p></div><div class="row tight"><button id="create-version" type="button" disabled>确认生成简历</button><button id="edit-version" type="button" class="secondary" hidden>编辑</button><button id="save-version" type="button" hidden>保存</button><button id="cancel-version" type="button" class="secondary" hidden>取消</button></div></div><p class="notice">AI 生成内容未经事实核验。请核对简历内容后再导出。</p><div id="generation-progress" class="progress-status" role="status" aria-live="polite" hidden><span>正在生成简历，请稍候…</span><progress aria-label="正在生成岗位简历"></progress></div><div id="resume-document" class="resume-document empty">选择岗位版本后，这里会显示简历。</div></section>
+  <section class="resume-column"><div class="section-heading"><div><h2 id="current-title">选择一个岗位</h2><p id="current-meta" class="hint">从左侧选择公司和岗位，查看简历版本。</p></div><div class="row tight"><button id="create-version" type="button" disabled>确认生成简历</button><button id="edit-version" type="button" class="secondary" hidden>编辑</button><button id="save-version" type="button" hidden>保存</button><button id="cancel-version" type="button" class="secondary" hidden>取消</button></div></div>
+    <section id="job-details" class="job-details" hidden><div class="section-heading"><h3>目标职位与招聘要求</h3><button id="edit-job" class="secondary small" type="button">修改职位</button></div><p id="job-requirements" class="requirements-text"></p><form id="job-edit-form" hidden><label>职位名称<input id="job-edit-title" required></label><label>招聘要求<textarea id="job-edit-text" rows="14" required></textarea></label><label class="button secondary">上传 DOCX / DOC / PDF<input id="job-edit-upload" type="file" accept=".docx,.doc,.pdf"></label><p id="job-edit-upload-state" class="hint" role="status"></p><div class="row"><button type="submit">检查后保存修改</button><button id="cancel-job-edit" class="secondary" type="button">取消</button></div></form></section>
+    <div class="workspace-tabs" role="tablist" aria-label="工作区"><button id="tab-versions" type="button" role="tab" aria-selected="true">简历版本</button><button id="tab-interview" type="button" role="tab" aria-selected="false">模拟面试</button></div>
+    <section id="versions-panel" role="tabpanel"><p class="notice">AI 生成内容未经事实核验。请核对简历内容后再导出。</p><div id="generation-progress" class="progress-status" role="status" aria-live="polite" hidden><span>正在生成简历，请稍候…</span><progress aria-label="正在生成岗位简历"></progress></div><div id="resume-document" class="resume-document empty">选择岗位版本后，这里会显示简历。</div><button id="start-interview" type="button" hidden>用此版本开始面试</button></section>
+    <section id="interview-panel" class="interview-panel" role="tabpanel" hidden><details id="interview-context" hidden><summary>查看本场招聘要求</summary><p id="interview-requirements"></p></details><div id="interview-session"></div></section>
+  </section>
   <aside class="card appearance">
     <section class="appearance-section"><h2>简历模板</h2><div id="template-cards" class="template-cards" role="group" aria-label="简历模板"></div><select id="template" class="visually-hidden" aria-label="模板"></select></section>
     <section class="appearance-section"><h2>主题色</h2><div id="color-swatches" class="color-swatches" role="group" aria-label="主题颜色"></div><select id="color" class="visually-hidden" aria-label="主题颜色"><option value="#2C5263">蓝灰</option><option value="#16766d">青绿</option><option value="#315f9b">蓝色</option><option value="#7a4b78">紫色</option><option value="#a45c34">暖棕</option></select></section>

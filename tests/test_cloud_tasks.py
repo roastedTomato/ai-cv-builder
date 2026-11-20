@@ -23,6 +23,7 @@ class FakeStore:
         self.resume = read_json(ROOT / "fixtures/base-resume.sample.json")
         self.job = {"id": "fictional-job", "job_text": "虚构测试岗位", "versions": [], "has_generated": False}
         self.company = {"id": "fictional-company"}
+        self.interviews = {}
 
     def get_task(self, task_id):
         task = self.tasks.get(task_id)
@@ -48,6 +49,19 @@ class FakeStore:
         self.job["versions"].append(version)
         self.job["has_generated"] = True
         return version
+
+    def get_interview(self, session_id):
+        session = self.interviews.get(session_id)
+        return deepcopy(session) if session else None
+
+    def update_interview(self, session_id, patch, expected_status=None):
+        session = self.interviews.get(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        if expected_status is not None and session["status"] != expected_status:
+            raise ValueError("面试状态已改变")
+        session.update(deepcopy(patch))
+        return deepcopy(session)
 
     def queue(self, kind, params, task_id="fictional-task"):
         self.tasks[task_id] = {"id": task_id, "kind": kind, "status": "queued", "input": params, "result": None, "error": None}
@@ -85,14 +99,14 @@ class CloudTaskTests(unittest.TestCase):
 
     def test_generate_version_creates_only_v1_from_confirmed_resume(self):
         generated = read_json(ROOT / "fixtures/generated-resume.sample.json")
-        self.store.queue("generate_version", {"job_id": "fictional-job"})
+        self.store.queue("generate_version", {"job_id": "fictional-job", "job_text": "虚构测试岗位"})
         with patch("cvbuilder.cloud_tasks.ai.generate_resume_from_job_unchecked", return_value=generated) as ai_call:
             result = self.run_task()
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["result"]["version"]["number"], 1)
         ai_call.assert_called_once_with(self.store.resume, "虚构测试岗位")
         self.assertEqual(self.run_task(), result)
-        self.store.queue("generate_version", {"job_id": "fictional-job"}, "fictional-task-2")
+        self.store.queue("generate_version", {"job_id": "fictional-job", "job_text": "虚构测试岗位"}, "fictional-task-2")
         with patch("cvbuilder.cloud_tasks.ai.generate_resume_from_job_unchecked", return_value=generated) as second_ai:
             second = self.run_task("fictional-task-2")
         self.assertEqual(second["status"], "failed")
@@ -101,10 +115,19 @@ class CloudTaskTests(unittest.TestCase):
         second_ai.assert_not_called()
         self.assertEqual(len(self.store.job["versions"]), 1)
 
+    def test_generate_version_keeps_queued_job_snapshot_after_edit(self):
+        generated = read_json(ROOT / "fixtures/generated-resume.sample.json")
+        self.store.queue("generate_version", {"job_id": "fictional-job", "job_text": "虚构旧要求"})
+        self.store.job["job_text"] = "虚构新要求"
+        with patch("cvbuilder.cloud_tasks.ai.generate_resume_from_job_unchecked", return_value=generated) as ai_call:
+            result = self.run_task()
+        self.assertEqual(result["result"]["version"]["job_text"], "虚构旧要求")
+        ai_call.assert_called_once_with(self.store.resume, "虚构旧要求")
+
     def test_generate_version_is_blocked_after_all_versions_deleted(self):
         self.store.job["has_generated"] = True
         self.store.job["versions"] = []
-        self.store.queue("generate_version", {"job_id": "fictional-job"})
+        self.store.queue("generate_version", {"job_id": "fictional-job", "job_text": "虚构测试岗位"})
         with patch("cvbuilder.cloud_tasks.ai.generate_resume_from_job_unchecked") as ai_call:
             result = self.run_task()
         self.assertEqual(result["status"], "failed")
@@ -113,7 +136,7 @@ class CloudTaskTests(unittest.TestCase):
 
     def test_concurrent_generate_cannot_create_v2(self):
         generated = read_json(ROOT / "fixtures/generated-resume.sample.json")
-        self.store.queue("generate_version", {"job_id": "fictional-job"})
+        self.store.queue("generate_version", {"job_id": "fictional-job", "job_text": "虚构测试岗位"})
         original_create = self.store.create_version
 
         def simultaneous_v1(*args, **kwargs):
@@ -128,7 +151,7 @@ class CloudTaskTests(unittest.TestCase):
         self.assertEqual(len(self.store.job["versions"]), 1)
 
     def test_duplicate_worker_does_not_generate_another_version(self):
-        self.store.queue("generate_version", {"job_id": "fictional-job"})
+        self.store.queue("generate_version", {"job_id": "fictional-job", "job_text": "虚构测试岗位"})
         original_update = self.store.update_task
 
         def claimed_by_another_worker(task_id, patch):
@@ -229,6 +252,135 @@ class CloudTaskTests(unittest.TestCase):
         result = self.run_task()
         self.assertEqual(result["error"]["code"], "invalid_task")
         self.assertEqual(self.s3.deleted, [])
+
+    def test_job_extraction_requires_review_and_cleans_upload(self):
+        upload_key = "uploads/fictional-user-a/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.docx"
+        self.store.queue("extract_job", {"key": upload_key})
+        doc = Document()
+        doc.add_paragraph("虚构测试数据：数据分析师\n负责报表维护。")
+        stream = io.BytesIO()
+        doc.save(stream)
+        self.s3.objects[(self.bucket, upload_key)] = stream.getvalue()
+        result = self.run_task()
+        self.assertEqual(result["status"], "succeeded")
+        self.assertIn("数据分析师", result["result"]["text"])
+        self.assertEqual(result["result"]["format"], "docx")
+        self.assertNotIn((self.bucket, upload_key), self.s3.objects)
+        self.assertEqual(self.store.job["job_text"], "虚构测试岗位")
+
+    def test_job_extraction_rejects_empty_pdf_and_large_file(self):
+        from pypdf import PdfWriter
+        key = "uploads/fictional-user-a/cccccccccccccccccccccccccccccccc.pdf"
+        self.store.queue("extract_job", {"key": key})
+        pdf = PdfWriter()
+        pdf.add_blank_page(width=72, height=72)
+        stream = io.BytesIO()
+        pdf.write(stream)
+        self.s3.objects[(self.bucket, key)] = stream.getvalue()
+        empty = self.run_task()
+        self.assertEqual(empty["error"]["code"], "no_extractable_text")
+        self.assertIn("扫描件", empty["error"]["message"])
+        self.assertIn((self.bucket, key), self.s3.deleted)
+        self.store.queue("extract_job", {"key": key}, "fictional-large")
+        self.s3.objects[(self.bucket, key)] = b"x" * (MAX_UPLOAD_BYTES + 1)
+        large = self.run_task("fictional-large")
+        self.assertEqual(large["error"]["code"], "file_too_large")
+        self.assertNotIn((self.bucket, key), self.s3.objects)
+
+    def test_interview_question_and_feedback_are_persisted(self):
+        session_id = "fictional-interview"
+        self.store.interviews[session_id] = {
+            "id": session_id, "status": "new", "job_text": "虚构招聘要求", "resume_content": {}, "turns": []}
+        self.store.queue("interview_question", {"session_id": session_id})
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_question",
+                   return_value={"question": "请做自我介绍。", "category": "自我介绍", "reference_answer": "请依据已确认经历介绍自己。"}):
+            first = self.run_task()
+        self.assertEqual(first["status"], "succeeded")
+        self.assertEqual(self.store.interviews[session_id]["status"], "awaiting_answer")
+        turn = self.store.interviews[session_id]["turns"][-1]
+        self.assertEqual(turn["question"], "请做自我介绍。")
+        self.assertEqual(turn["reference_answer"], "请依据已确认经历介绍自己。")
+        self.assertIsNone(turn["answer"])
+        self.store.update_interview(session_id, {"status": "feedback_pending",
+            "turns": [{**turn, "answer": "虚构测试回答"}]}, expected_status="awaiting_answer")
+        self.store.queue("interview_feedback", {"session_id": session_id}, "fictional-feedback")
+        feedback = {"evaluation": "表达清楚", "suggestions": "增加结构", "answer_points": "先概括再举例",
+                    "follow_up": "请说明一个例子", "confirmed_facts": [], "user_claims": [], "unconfirmed_suggestions": []}
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback", return_value=feedback):
+            second = self.run_task("fictional-feedback")
+        self.assertEqual(second["status"], "succeeded")
+        saved = self.store.interviews[session_id]
+        self.assertEqual(saved["status"], "feedback_ready")
+        self.assertEqual(saved["turns"][-1]["answer"], "虚构测试回答")
+        self.assertEqual(saved["turns"][-1]["feedback"], feedback)
+        self.assertEqual(saved["turns"][-1]["reference_answer"], "请依据已确认经历介绍自己。")
+
+    def test_interview_feedback_failure_keeps_submitted_answer(self):
+        session_id = "fictional-interview"
+        self.store.interviews[session_id] = {"id": session_id, "status": "feedback_pending",
+            "job_text": "虚构要求", "resume_content": {}, "turns": [
+                {"id": "fictional-turn", "question": "请介绍项目", "answer": "虚构测试回答", "feedback": None}]}
+        self.store.queue("interview_feedback", {"session_id": session_id})
+        with self.assertLogs("cvbuilder.cloud_tasks", level="ERROR") as logs, \
+             patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback", side_effect=RuntimeError("private-answer-and-secret")):
+            result = self.run_task()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["message"], "回答反馈生成失败，回答已保存，请重试。")
+        self.assertEqual(self.store.interviews[session_id]["status"], "failed")
+        self.assertEqual(self.store.interviews[session_id]["turns"][-1]["answer"], "虚构测试回答")
+        self.assertNotIn("private-answer-and-secret", str(result))
+        self.assertNotIn("private-answer-and-secret", "\n".join(logs.output))
+        self.assertNotIn("虚构测试回答", "\n".join(logs.output))
+
+    def test_question_failure_identifies_generation_step_and_preserves_retry(self):
+        session_id = "fictional-interview"
+        self.store.interviews[session_id] = {"id": session_id, "status": "question_pending",
+            "job_text": "虚构要求", "resume_content": {}, "turns": []}
+        self.store.queue("interview_question", {"session_id": session_id})
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_question", side_effect=RuntimeError("fictional private content")):
+            result = self.run_task()
+        self.assertEqual(result["error"]["message"], "问题与参考答案生成失败，请重试。")
+        self.assertEqual(self.store.interviews[session_id]["status"], "failed")
+        self.assertEqual(self.store.interviews[session_id]["turns"], [])
+
+    def test_interview_auth_failure_has_no_key_details(self):
+        class FictionalAuthFailure(Exception):
+            status_code = 401
+
+        session_id = "fictional-interview"
+        self.store.interviews[session_id] = {"id": session_id, "status": "new",
+            "job_text": "虚构要求", "resume_content": {}, "turns": []}
+        self.store.queue("interview_question", {"session_id": session_id})
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_question", side_effect=FictionalAuthFailure("fictional-secret")):
+            result = self.run_task()
+        self.assertEqual(result["error"]["code"], "model_auth_error")
+        self.assertNotIn("fictional-secret", str(result))
+
+    def test_older_question_reference_is_saved_before_answer(self):
+        session_id = "fictional-interview"
+        self.store.interviews[session_id] = {"id": session_id, "status": "reference_pending",
+            "job_text": "虚构要求", "resume_content": {}, "turns": [
+                {"id": "fictional-turn", "question": "请介绍项目", "answer": None, "feedback": None}]}
+        self.store.queue("interview_reference", {"session_id": session_id, "turn_id": "fictional-turn"})
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_reference_answer", return_value="请依据已确认项目经历作答。"):
+            result = self.run_task()
+        self.assertEqual(result["status"], "succeeded")
+        turn = self.store.interviews[session_id]["turns"][0]
+        self.assertEqual(turn["reference_answer"], "请依据已确认项目经历作答。")
+        self.assertIsNone(turn["answer"])
+        self.assertEqual(self.store.interviews[session_id]["status"], "awaiting_answer")
+
+    def test_reference_failure_allows_answer_retry(self):
+        session_id = "fictional-interview"
+        self.store.interviews[session_id] = {"id": session_id, "status": "reference_pending",
+            "job_text": "虚构要求", "resume_content": {}, "turns": [
+                {"id": "fictional-turn", "question": "请介绍项目", "answer": None, "feedback": None}]}
+        self.store.queue("interview_reference", {"session_id": session_id, "turn_id": "fictional-turn"})
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_reference_answer", side_effect=RuntimeError("fictional private content")):
+            result = self.run_task()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(self.store.interviews[session_id]["status"], "awaiting_answer")
+        self.assertIsNone(self.store.interviews[session_id]["turns"][0]["answer"])
 
     def test_export_requires_owned_version_and_removes_placeholders(self):
         generated = read_json(ROOT / "fixtures/generated-resume.sample.json")

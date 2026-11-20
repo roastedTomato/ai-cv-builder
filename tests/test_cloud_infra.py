@@ -19,6 +19,21 @@ class PublishSiteTests(unittest.TestCase):
         template = (ROOT / "infra" / "template.yaml").read_text(encoding="utf-8")
         self.assertRegex(template, r"AllowMethods:\s*\[[^\]]*PATCH[^\]]*\]")
 
+    def test_existing_worker_supports_job_extraction_and_interview_tasks(self):
+        """Fictional test: new task kinds reuse the scoped worker and temporary store."""
+        template = (ROOT / "infra" / "template.yaml").read_text(encoding="utf-8")
+        api = template.split("  ApiFunction:\n", 1)[1].split("  WorkerFunction:\n", 1)[0]
+        worker = template.split("  WorkerFunction:\n", 1)[1].split("  ApiLogGroup:\n", 1)[0]
+        files = template.split("  TemporaryFiles:\n", 1)[1].split("  OpenAISecret:\n", 1)[0]
+        self.assertIn("LambdaInvokePolicy:", api)
+        self.assertIn("DynamoDBCrudPolicy:", api)
+        self.assertIn("S3CrudPolicy:", api)
+        for permission in ("DynamoDBCrudPolicy:", "S3CrudPolicy:", "secretsmanager:GetSecretValue"):
+            self.assertIn(permission, worker)
+        self.assertIn("Timeout: 900", worker)
+        self.assertIn("ExpirationInDays: 2", files)
+        self.assertIn("DaysAfterInitiation: 1", files)
+
     def test_container_copies_only_runtime_inputs(self):
         dockerfile = (ROOT / "Dockerfile.cloud").read_text(encoding="utf-8")
         self.assertNotIn("COPY . ", dockerfile)

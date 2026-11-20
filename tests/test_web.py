@@ -45,6 +45,78 @@ class WebContractTests(unittest.TestCase):
                 self.assertEqual(records.list(), {"companies": []})
                 self.assertEqual(client.delete(f"/api/jobs/{other['id']}").status_code, 404)
 
+    def test_phase5_job_snapshot_and_interview_flow(self):
+        from fastapi.testclient import TestClient
+        from tempfile import TemporaryDirectory
+        from cvbuilder.job_storage import JobRecordStore
+        from cvbuilder import interview_ai
+        client = TestClient(self.web.app, base_url="http://127.0.0.1")
+        confirmed = read_json(ROOT / "fixtures/base-resume.sample.json")
+        with TemporaryDirectory() as folder:
+            records = JobRecordStore(Path(folder))
+            with patch.object(self.web, "job_store", records), patch.object(self.web.store, "load", return_value=confirmed), \
+                 patch.object(interview_ai, "generate_question", return_value={"question": "虚构测试：请自我介绍", "category": "自我介绍", "reference_answer": "请据实介绍已确认经历。"}), \
+                 patch.object(interview_ai, "generate_feedback", return_value={"evaluation": "结构清晰", "suggestions": "补充背景", "answer_points": "背景、行动、结果", "follow_up": "请举例", "confirmed_facts": [], "user_claims": [], "unconfirmed_suggestions": []}):
+                company = records.add_company("虚构测试公司")
+                job = records.add_job(company["id"], "虚构测试职位", "旧版虚构要求")
+                version = records.create_version(company["id"], job["id"], {"summary": []}, [], {}, job_text="旧版虚构要求")
+                updated = client.patch(f"/api/jobs/{job['id']}", json={"title": "虚构测试职位", "job_text": "新版虚构要求", "expected_revision": 0})
+                self.assertEqual(updated.status_code, 200)
+                self.assertEqual(client.patch(f"/api/jobs/{job['id']}", json={"title": "虚构测试职位", "job_text": "冲突要求", "expected_revision": 0}).status_code, 409)
+                session = client.post(f"/api/jobs/{job['id']}/versions/{version['id']}/interviews").json()
+                self.assertEqual(session["job_text"], "旧版虚构要求")
+                self.assertEqual(session["turns"][0]["reference_answer"], "请据实介绍已确认经历。")
+                self.assertIsNone(session["turns"][0]["answer"])
+                generic_turn = {**session["turns"][0], "reference_answer": "参考答题框架（请按真实经历填写）：[真实经历]"}
+                records.update_interview(session["id"], {"turns": [generic_turn]}, expected_status="awaiting_answer")
+                upgraded = client.post(f"/api/interviews/{session['id']}/reference")
+                self.assertEqual(upgraded.status_code, 200)
+                self.assertIn("示例软件工作室", upgraded.json()["turns"][0]["reference_answer"])
+                old_turn = {key: value for key, value in session["turns"][0].items() if key != "reference_answer"}
+                records.update_interview(session["id"], {"turns": [old_turn]}, expected_status="awaiting_answer")
+                with patch.object(interview_ai, "generate_reference_answer", return_value="虚构测试：据实介绍经历"):
+                    backfilled = client.post(f"/api/interviews/{session['id']}/reference")
+                self.assertEqual(backfilled.status_code, 200)
+                self.assertEqual(backfilled.json()["turns"][0]["reference_answer"], "虚构测试：据实介绍经历")
+                self.assertIsNone(backfilled.json()["turns"][0]["answer"])
+                answered = client.post(f"/api/interviews/{session['id']}/answers", json={"answer": "虚构测试回答"})
+                self.assertEqual(answered.status_code, 200)
+                self.assertEqual(answered.json()["turns"][0]["feedback"]["evaluation"], "结构清晰")
+                self.assertEqual(answered.json()["turns"][0]["reference_answer"], "虚构测试：据实介绍经历")
+                self.assertEqual(client.post(f"/api/interviews/{session['id']}/next").status_code, 200)
+                self.assertEqual(client.post(f"/api/interviews/{session['id']}/end").json()["status"], "ended")
+                records.delete_version(job["id"], version["id"])
+                history = client.get(f"/api/interviews/{session['id']}").json()
+                self.assertTrue(history["version_deleted"])
+                self.assertEqual(history["turns"][0]["answer"], "虚构测试回答")
+
+    def test_interview_auth_failure_reports_safe_retry_reason(self):
+        from fastapi.testclient import TestClient
+        from tempfile import TemporaryDirectory
+        from cvbuilder.job_storage import JobRecordStore
+        from cvbuilder import interview_ai
+
+        class FictionalAuthFailure(Exception):
+            status_code = 401
+
+        client = TestClient(self.web.app, base_url="http://127.0.0.1")
+        with TemporaryDirectory() as folder:
+            records = JobRecordStore(Path(folder))
+            with patch.object(self.web, "job_store", records), \
+                 patch.object(self.web.store, "load", return_value=read_json(ROOT / "fixtures/base-resume.sample.json")), \
+                 patch.object(interview_ai, "generate_question", side_effect=FictionalAuthFailure("fictional-secret")):
+                company = records.add_company("虚构测试公司")
+                job = records.add_job(company["id"], "虚构测试岗位", "虚构测试招聘要求")
+                version = records.create_version(company["id"], job["id"], {}, [], {})
+                response = client.post(f"/api/jobs/{job['id']}/versions/{version['id']}/interviews")
+                self.assertEqual(response.status_code, 502)
+                self.assertEqual(response.json()["error"]["code"], "model_auth_error")
+                self.assertNotIn("fictional-secret", str(response.json()))
+                session = records.list_interviews(job["id"])[0]
+                saved = records.get_interview(session["id"])
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["error"]["code"], "model_auth_error")
+
     def test_base_resume_writes_are_schema_validated(self):
         resume = read_json(ROOT / "fixtures/base-resume.sample.json")
         with patch.object(self.web.store, "save") as save:

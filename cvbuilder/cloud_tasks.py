@@ -6,12 +6,14 @@ import logging
 import os
 import re
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from . import ai
+from . import ai, interview_ai
 from .cli import ROOT
 from .importers import ImportErrorBase, extract_text
 from .importers.fields import extract_personal, keep_explicit_skills
@@ -101,6 +103,24 @@ def _import_resume(task_id: str, user_id: str, task_input: dict[str, Any], bucke
     return {"draft_id": task_id, "format": extracted.format, "draft": draft}
 
 
+def _extract_job(task_id: str, user_id: str, task_input: dict[str, Any], bucket: str, s3: Any) -> dict[str, Any]:
+    """Extract a job posting for human review; never persist it as a job here."""
+    key, suffix = _upload_location(task_id, user_id, task_input)
+    response = s3.get_object(Bucket=bucket, Key=key)
+    body = response["Body"]
+    try:
+        content = body.read(MAX_UPLOAD_BYTES + 1)
+    finally:
+        body.close()
+    if len(content) > MAX_UPLOAD_BYTES or response.get("ContentLength", 0) > MAX_UPLOAD_BYTES:
+        raise TaskFailure("file_too_large", "文件大小不能超过 15 MB。")
+    with tempfile.TemporaryDirectory(prefix="cvbuilder-job-import-") as folder:
+        path = Path(folder) / ("upload" + suffix)
+        path.write_bytes(content)
+        extracted = extract_text(path)
+    return {"text": extracted.text, "format": extracted.format}
+
+
 def _generate_version(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
     job_id = _required_text(task_input.get("job_id"), "岗位 ID")
     try:
@@ -113,13 +133,14 @@ def _generate_version(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
     if not resume:
         raise TaskFailure("resume_required", "请先保存基础简历。")
     _load_openai_key()
-    content = ai.generate_resume_from_job_unchecked(resume, job["job_text"])
+    job_text = _required_text(task_input.get("job_text"), "招聘要求快照")
+    content = ai.generate_resume_from_job_unchecked(resume, job_text)
     order = [key for key in ("summary", "education", "work", "projects", "skills", "certificates") if content.get(key)]
     try:
         version = store.create_version(
             company["id"], job_id, content, order,
             {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"},
-            job["job_text"], initial_only=True,
+            job_text, initial_only=True,
         )
     except ValueError as exc:
         # A concurrent task may have created V1 while this AI call was running.
@@ -127,6 +148,73 @@ def _generate_version(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
             raise TaskFailure("version_exists", "该岗位已有简历版本，请编辑现有版本并保存。") from exc
         raise
     return {"version": version}
+
+
+def _interview_question(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
+    session_id = _required_text(task_input.get("session_id"), "面试 ID")
+    session = store.get_interview(session_id)
+    if session is None:
+        raise TaskFailure("not_found", "面试记录不存在。")
+    status = session.get("status")
+    if status not in {"new", "question_pending"}:
+        raise TaskFailure("invalid_state", "当前面试状态不能生成下一题。")
+    resume = store.load_resume()
+    if not resume:
+        raise TaskFailure("resume_required", "请先保存基础简历。")
+    _load_openai_key()
+    question = interview_ai.generate_question(session, resume)
+    turn = {"id": uuid.uuid4().hex, "category": question["category"],
+            "question": question["question"], "reference_answer": question["reference_answer"],
+            "answer": None, "feedback": None,
+            "follow_up": None, "created_at": datetime.now(timezone.utc).isoformat()}
+    updated = store.update_interview(session_id,
+        {"turns": [*(session.get("turns") or []), turn], "status": "awaiting_answer", "error": None},
+        expected_status=status)
+    return {"session_id": session_id, "turn_id": turn["id"], "status": updated["status"]}
+
+
+def _interview_reference(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
+    session_id = _required_text(task_input.get("session_id"), "面试 ID")
+    session = store.get_interview(session_id)
+    if session is None:
+        raise TaskFailure("not_found", "面试记录不存在。")
+    turns = session.get("turns") or []
+    if session.get("status") != "reference_pending" or not turns or turns[-1].get("id") != task_input.get("turn_id") or turns[-1].get("answer"):
+        raise TaskFailure("invalid_state", "当前问题不能生成参考答案。")
+    resume = store.load_resume()
+    if not resume:
+        raise TaskFailure("resume_required", "请先保存基础简历。")
+    _load_openai_key()
+    reference = interview_ai.generate_reference_answer(session, resume)
+    revised = [*turns[:-1], {**turns[-1], "reference_answer": reference}]
+    updated = store.update_interview(session_id,
+        {"turns": revised, "status": "awaiting_answer", "error": None},
+        expected_status="reference_pending")
+    return {"session_id": session_id, "turn_id": revised[-1]["id"], "status": updated["status"]}
+
+
+def _interview_feedback(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
+    session_id = _required_text(task_input.get("session_id"), "面试 ID")
+    session = store.get_interview(session_id)
+    if session is None:
+        raise TaskFailure("not_found", "面试记录不存在。")
+    if session.get("status") != "feedback_pending":
+        raise TaskFailure("invalid_state", "当前面试状态不能生成反馈。")
+    turns = session.get("turns") or []
+    if not turns or not turns[-1].get("answer"):
+        raise TaskFailure("invalid_state", "面试回答尚未提交。")
+    resume = store.load_resume()
+    if not resume:
+        raise TaskFailure("resume_required", "请先保存基础简历。")
+    _load_openai_key()
+    feedback = interview_ai.generate_feedback(session, resume)
+    revised = [*turns[:-1], {**turns[-1], "feedback": feedback,
+                              "follow_up": feedback.get("follow_up") or None,
+                              "feedback_at": datetime.now(timezone.utc).isoformat()}]
+    updated = store.update_interview(session_id,
+        {"turns": revised, "status": "feedback_ready", "error": None},
+        expected_status="feedback_pending")
+    return {"session_id": session_id, "turn_id": revised[-1]["id"], "status": updated["status"]}
 
 
 def _generate(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
@@ -191,12 +279,20 @@ def process_task(user_id: str, task_id: str, *, store: Any = None, s3_client: An
     try:
         if task["kind"] == "import":
             result = _import_resume(task_id, user_id, task_input, bucket, s3)
+        elif task["kind"] == "extract_job":
+            result = _extract_job(task_id, user_id, task_input, bucket, s3)
         elif task["kind"] == "generate_version":
             result = _generate_version(store, task_input)
         elif task["kind"] == "generate":
             result = _generate(store, task_input)
         elif task["kind"] == "export":
             result = _export(task_id, user_id, store, task_input, bucket, s3)
+        elif task["kind"] == "interview_question":
+            result = _interview_question(store, task_input)
+        elif task["kind"] == "interview_reference":
+            result = _interview_reference(store, task_input)
+        elif task["kind"] == "interview_feedback":
+            result = _interview_feedback(store, task_input)
         else:
             raise TaskFailure("invalid_task", "不支持的后台任务。")
         encoded = json.dumps(result, ensure_ascii=False).encode("utf-8")
@@ -215,9 +311,28 @@ def process_task(user_id: str, task_id: str, *, store: Any = None, s3_client: An
             error = {"code": "ai_error", "message": "AI 处理失败，请检查服务配置后重试。"}
         else:
             error = {"code": "task_failed", "message": "处理失败，请稍后重试。"}
+        if task.get("kind") == "interview_question":
+            error = {"code": error["code"], "message": "问题与参考答案生成失败，请重试。"}
+        elif task.get("kind") == "interview_feedback":
+            error = {"code": error["code"], "message": "回答反馈生成失败，回答已保存，请重试。"}
+        if task.get("kind") == "interview_reference":
+            error = {"code": error["code"], "message": "旧面试题的参考答案生成失败，请重试或继续回答。新题目会同时生成问题和参考答案。"}
+        if task.get("kind") in {"interview_question", "interview_feedback", "interview_reference"} and getattr(exc, "status_code", None) == 401:
+            error = {"code": "model_auth_error", "message": "OpenAI API key 无效或已失效，请更新配置后重试。"}
+        if task.get("kind") in {"interview_question", "interview_feedback", "interview_reference"}:
+            session_id = task_input.get("session_id")
+            if isinstance(session_id, str):
+                try:
+                    session = store.get_interview(session_id)
+                    if session and session.get("status") != "ended":
+                        next_status = "awaiting_answer" if task.get("kind") == "interview_reference" else "failed"
+                        store.update_interview(session_id, {"status": next_status, "error": error},
+                                               expected_status=session["status"])
+                except (KeyError, ValueError):
+                    pass
         return store.update_task(task_id, {"status": "failed", "result": None, "error": error})
     finally:
-        if task.get("kind") == "import":
+        if task.get("kind") in {"import", "extract_job"}:
             try:
                 key, _ = _upload_location(task_id, user_id, task_input)
             except TaskFailure:
