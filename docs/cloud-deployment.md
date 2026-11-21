@@ -23,7 +23,7 @@ CloudFormation 创建一个 **US$50/月** AWS 成本预算，在实际成本达�
 
 ## 创建与发布
 
-需要 AWS CLI、SAM CLI、Docker、Python 3.11+、对目标账号的部署权限，以及已启用的 AWS 账单访问。镜像和 Lambda 都指定单一 `arm64` 架构；x86 开发机需要能执行 Docker 跨架构构建。以下命令以仓库根目录为工作目录；`--guided` 首次运行时选择 `ap-southeast-2`、提供唯一 Cognito 前缀和接收账单提醒的邮箱，并允许创建 IAM 角色。CloudFront 可在部署后数分钟才完成分发。发布脚本只上传网页静态文件，并在临时目录生成公开的站点配置，不提交账号配置。
+需要 AWS CLI、SAM CLI、Docker、Node.js 24+、Python 3.11+、对目标账号的部署权限，以及已启用的 AWS 账单访问。镜像和 Lambda 都指定单一 `arm64` 架构；x86 开发机需要能执行 Docker 跨架构构建。以下命令以仓库根目录为工作目录；`--guided` 首次运行时选择 `ap-southeast-2`、提供唯一 Cognito 前缀和接收账单提醒的邮箱，并允许创建 IAM 角色。CloudFront 可在部署后数分钟才完成分发。Vue 工作台从 `frontend/` 通过 Vite 构建到 `web/static/vue/`；本地运行 Python 网页前执行 `cd frontend && npm ci && npm run build`，前端测试运行 `cd frontend && npm test`。云端镜像在 Docker 构建中自行生成该产物，`publish_site.py` 也会先执行前端构建，再上传静态文件并在临时目录生成公开的站点配置，不提交账号配置。
 
 ```bash
 sam build --template-file infra/template.yaml

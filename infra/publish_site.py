@@ -9,10 +9,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+FRONTEND = ROOT / "frontend"
 
 
 def aws(*args: str) -> str:
     return subprocess.check_output(["aws", *args], text=True).strip()
+
+
+def build_frontend() -> None:
+    subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=FRONTEND, check=True)
+    subprocess.run(["npm", "run", "build"], cwd=FRONTEND, check=True)
 
 
 def main() -> None:
@@ -26,12 +32,14 @@ def main() -> None:
     required = {"SiteBucket", "ApiUrl", "CognitoIssuer", "UserPoolClientId", "HostedUiDomain", "SiteUrl", "DistributionId"}
     if required - outputs.keys():
         raise SystemExit(f"Missing stack outputs: {sorted(required - outputs.keys())}")
+    build_frontend()
     bucket = outputs["SiteBucket"]
     aws("s3", "cp", str(ROOT / "web" / "templates" / "index.html"),
         f"s3://{bucket}/index.html", "--region", args.region,
         "--content-type", "text/html; charset=utf-8")
     aws("s3", "sync", str(ROOT / "web" / "static"), f"s3://{bucket}/static/",
-        "--region", args.region, "--exclude", "cloud-config.js")
+        "--region", args.region, "--exclude", "cloud-config.js",
+        "--exclude", "app.js", "--exclude", "react/*")
     config = {
         "apiBase": outputs["ApiUrl"],
         "issuer": outputs["CognitoIssuer"],

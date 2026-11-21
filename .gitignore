@@ -7,3 +7,6 @@ __pycache__/
 .env
 outputs/*
 !outputs/.gitkeep
+frontend/node_modules/
+web/static/react/
+web/static/vue/

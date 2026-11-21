@@ -71,8 +71,11 @@ class PublishSiteTests(unittest.TestCase):
                 config_text = Path(args[2]).read_text(encoding="utf-8")
             return ""
 
-        with patch.object(publish_site, "aws", side_effect=fake_aws), patch.object(sys, "argv", ["publish_site.py", "--stack", "fictional-stack"]):
+        with patch.object(publish_site, "aws", side_effect=fake_aws), \
+             patch.object(publish_site, "build_frontend") as build, \
+             patch.object(sys, "argv", ["publish_site.py", "--stack", "fictional-stack"]):
             publish_site.main()
+        build.assert_called_once_with()
         self.assertIn("fictional-client-id", config_text)
         self.assertNotIn("secret-must-not-be-public", config_text)
         self.assertTrue(any(x[:2] == ("cloudfront", "create-invalidation") for x in calls))

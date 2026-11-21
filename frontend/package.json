@@ -1,0 +1,24 @@
+{
+  "name": "ai-cv-builder-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run --environment jsdom",
+    "watch": "vite build --watch"
+  },
+  "dependencies": {
+    "vue": "3.5.46"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.1",
+    "@vitejs/plugin-vue": "6.0.11",
+    "@vue/test-utils": "2.6.0",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "vite": "7.3.7",
+    "vitest": "5.1.1",
+    "vue-tsc": "3.3.14"
+  }
+}

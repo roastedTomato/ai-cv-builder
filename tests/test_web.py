@@ -170,11 +170,8 @@ class WebContractTests(unittest.TestCase):
             self.assertEqual(response.json(), draft)
             generate.assert_called_once_with(base, "虚构测试岗位要求")
         page = client.get("/").text
-        self.assertIn("未经事实核验", page)
-        self.assertNotIn("确认分析内容", page)
-        self.assertIn("确认生成简历", page)
-        self.assertIn("resume-document", page)
-        self.assertIn('id="generation-progress"', page)
+        self.assertIn('id="root"', page)
+        self.assertIn('/static/vue/app.js', page)
 
     def test_full_local_flow_persists_base_then_resets(self):
         from docx import Document
@@ -256,11 +253,8 @@ class WebContractTests(unittest.TestCase):
         page = client.get("/")
         self.assertEqual(page.status_code, 200)
         self.assertIn("简历工作台", page.text)
-        self.assertIn('id="resume-document"', page.text)
-        self.assertIn('id="company-list"', page.text)
-        self.assertIn('id="page-width"', page.text)
-        self.assertIn('id="base-progress"', page.text)
-        self.assertNotIn('id="generated"', page.text)
+        self.assertIn('id="root"', page.text)
+        self.assertIn('/static/vue/app.js', page.text)
         self.assertEqual(len(client.get("/api/templates").json()), 3)
         invalid = client.put("/api/resume", json={"not": "a resume"})
         self.assertEqual(invalid.status_code, 422)

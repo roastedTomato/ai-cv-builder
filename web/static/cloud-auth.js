@@ -6,7 +6,6 @@
   }
   const panel = document.getElementById('auth-panel');
   const login = document.getElementById('auth-login');
-  const logout = document.getElementById('auth-logout');
   const message = document.getElementById('auth-message');
   const issuer = config.issuer.replace(/\/$/, '');
   const domain = config.hostedUiDomain.replace(/\/$/, '');
@@ -42,12 +41,14 @@
   function render() {
     const logged = !!validToken();
     panel.hidden = logged;
-    logout.hidden = !logged;
+    const logout = document.getElementById('auth-logout');
+    if (logout) logout.hidden = !logged;
     document.querySelector('main').hidden = !logged;
     return logged;
   }
   login.addEventListener('click', signIn);
-  logout.addEventListener('click', () => {
+  document.addEventListener('click', event => {
+    if (!(event.target instanceof Element) || !event.target.closest('#auth-logout')) return;
     sessionStorage.removeItem('cv-access-token');
     const query = new URLSearchParams({ client_id: config.clientId, logout_uri: config.redirectUri });
     location.assign(`${domain}/logout?${query}`);

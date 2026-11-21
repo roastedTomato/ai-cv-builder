@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+.aws
+.aws-sam
+frontend/node_modules
+web/static/react
+web/static/app.js
+web/static/vue
+__pycache__
+*.pyc
+outputs
