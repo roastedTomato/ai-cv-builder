@@ -19,17 +19,29 @@ class PublishSiteTests(unittest.TestCase):
         template = (ROOT / "infra" / "template.yaml").read_text(encoding="utf-8")
         self.assertRegex(template, r"AllowMethods:\s*\[[^\]]*PATCH[^\]]*\]")
 
-    def test_existing_worker_supports_job_extraction_and_interview_tasks(self):
-        """Fictional test: new task kinds reuse the scoped worker and temporary store."""
+    def test_private_mysql_and_worker_permissions(self):
+        """Fictional test: database, migrator and worker share scoped VPC access."""
         template = (ROOT / "infra" / "template.yaml").read_text(encoding="utf-8")
         api = template.split("  ApiFunction:\n", 1)[1].split("  WorkerFunction:\n", 1)[0]
-        worker = template.split("  WorkerFunction:\n", 1)[1].split("  ApiLogGroup:\n", 1)[0]
+        worker = template.split("  WorkerFunction:\n", 1)[1].split("  MigratorFunction:\n", 1)[0]
+        migrator = template.split("  MigratorFunction:\n", 1)[1].split("  ApiLogGroup:\n", 1)[0]
+        database = template.split("  MySQLDatabase:\n", 1)[1].split("  TemporaryFiles:\n", 1)[0]
         files = template.split("  TemporaryFiles:\n", 1)[1].split("  OpenAISecret:\n", 1)[0]
         self.assertIn("LambdaInvokePolicy:", api)
-        self.assertIn("DynamoDBCrudPolicy:", api)
+        self.assertIn("AWSLambdaVPCAccessExecutionRole", api)
+        self.assertIn("CV_MYSQL_SECRET_ARN", template)
+        self.assertIn("PrivateSubnetA", template)
+        self.assertIn("PrivateSubnetB", template)
+        self.assertIn("PubliclyAccessible: false", database)
+        self.assertIn("StorageEncrypted: true", database)
+        self.assertIn("EngineVersion: 8.4.9", database)
+        self.assertNotIn("RecordsTable:", template)
+        self.assertNotIn("DynamoDBCrudPolicy:", template)
         self.assertIn("S3CrudPolicy:", api)
-        for permission in ("DynamoDBCrudPolicy:", "S3CrudPolicy:", "secretsmanager:GetSecretValue"):
+        for permission in ("AWSLambdaVPCAccessExecutionRole", "S3CrudPolicy:", "secretsmanager:GetSecretValue"):
             self.assertIn(permission, worker)
+        self.assertIn("cvbuilder.mysql_migrate.handler", migrator)
+        self.assertIn("secretsmanager:GetSecretValue", migrator)
         self.assertIn("Timeout: 900", worker)
         self.assertIn("ExpirationInDays: 2", files)
         self.assertIn("DaysAfterInitiation: 1", files)
@@ -43,7 +55,8 @@ class PublishSiteTests(unittest.TestCase):
             self.assertIn(needed, dockerfile)
 
     def test_cost_envelope_is_computed_from_rows(self):
-        self.assertEqual(tuple(map(str, cost_estimate.totals())), ("2.11", "8.90"))
+        self.assertEqual(str(sum(cost_estimate.FIXED_USD.values())), "67.730")
+        self.assertEqual(tuple(map(str, cost_estimate.totals())), ("69.640", "76.130"))
 
     def test_publishes_public_config_without_secret_or_local_data(self):
         outputs = [

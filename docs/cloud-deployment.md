@@ -1,59 +1,54 @@
-# 悉尼云端测试环境部署
+# 悉尼 MySQL 云端测试环境部署
 
-本说明适用于第五阶段继续使用的悉尼测试环境，**只使用虚构测试数据**。资源位于 `ap-southeast-2`；CloudFront 使用 AWS 默认 HTTPS 地址，API Gateway 使用独立 HTTPS 地址。网页不能直接读写 DynamoDB。部署前确认测试人员所在地在 [OpenAI API 支持地区清单](https://help.openai.com/en/articles/5347006-openai-api-supported-countries-and-territories)内；2026-11-16 查询时，澳大利亚和新西兰在清单中。OpenAI API 消费独立于下述 AWS 预算。
+本说明用于第五阶段开始前的云端 MySQL 准备工作。只使用明确标记的虚构测试账号和数据。保留现有 CloudFront、API Gateway、Cognito、Lambda、临时 S3 桶和 OpenAI 密钥；业务数据改存私有 RDS for MySQL 8.4.9。实际面向用户的第五阶段功能仍以 `IMPLEMENTATION_PLAN.md` 为准。
 
-## 部署前费用估算
+## 旧环境状态
 
-以下是**原测试负载的规划估算，不是第五阶段报价或消费上限**。假设每月 5 名活跃测试人员、20,000 次 API 调用、200 次后台任务（每次 60 秒、2 GB）、20,000 次静态请求、2 GB CloudFront 出站、DynamoDB 50,000 次读和 20,000 次写、S3 1 GB 临时存储、CloudWatch 日志 1 GB、一个密钥和三条告警。`python3 infra/cost_estimate.py` 对下表规划区间求和，结果为 **US$2.11–8.90/月**。第五阶段每次面试的出题和反馈会增加后台任务、DynamoDB 读写及 OpenAI 请求，不能直接套用这个区间。部署前按预期测试场次和题数重新估算调用量，并将实际用量输入 [AWS Pricing Calculator](https://calculator.aws/) 核对。区间并非已核实的悉尼单价；估算未包括税、备份增长、超出假设的流量或 OpenAI API。
+2026-11-23，AWS 账号 `349744180219` 的 `ap-southeast-2` 区域中，`cvbuilder-sydney-test` 堆栈原有 `RecordsTable` 物理表 `cvbuilder-sydney-test-RecordsTable-O1Y6B9ECT96V` 已按用户要求删除，且没有迁移数据。旧 API 在切换并建表前不可用。旧 CloudFormation 模板仍声明该已删除表；本次模板更新移除该资源，部署前应查看变更集和堆栈漂移。不要用旧模板再次部署。
 
-| 服务 | 月度规划区间（USD） | 主要变量与价格来源 |
-| --- | ---: | --- |
-| Lambda API 与后台任务 | 0.80–3.00 | 调用量、GB 秒、镜像冷启动；[Lambda 定价](https://aws.amazon.com/lambda/pricing/) |
-| API Gateway HTTP API | 0.10–0.50 | 请求次数、出站流量；[API Gateway 定价](https://aws.amazon.com/api-gateway/pricing/) |
-| DynamoDB 按需与恢复点 | 0.20–1.00 | 读写单位、数据体积、PITR；[DynamoDB 定价](https://aws.amazon.com/dynamodb/pricing/) |
-| S3 临时与静态桶 | 0.10–0.50 | GB 月、请求次数；[S3 定价](https://aws.amazon.com/s3/pricing/) |
-| CloudFront | 0.20–2.00 | 出站量、HTTPS 请求、可用额度；[CloudFront 定价](https://aws.amazon.com/cloudfront/pricing/) |
-| Cognito Lite | 0.00 | 5 名用户处于当前 10,000 MAU 免费层内，需核对账号共享额度；[Cognito 定价](https://aws.amazon.com/cognito/pricing/) |
-| CloudWatch 日志与告警 | 0.20–1.00 | 日志摄入、保留和告警；[CloudWatch 定价](https://aws.amazon.com/cloudwatch/pricing/) |
-| Secrets Manager | 0.41–0.50 | 一个密钥及读取；[Secrets Manager 定价](https://aws.amazon.com/secrets-manager/pricing/) |
-| ECR 镜像 | 0.10–0.30 | 镜像大小；[ECR 定价](https://aws.amazon.com/ecr/pricing/) |
-| SNS 与 AWS Budgets | 0.00–0.10 | 告警邮件；[Budgets 定价](https://aws.amazon.com/aws-cost-management/aws-budgets/pricing/) |
+## 费用与边界
 
-CloudFormation 创建一个 **US$50/月** AWS 成本预算，在实际成本达到 80% 或预测达到 100% 时向账单邮箱发信；它**不会自动停机**。SNS 告警订阅邮件需人工确认。OpenAI 需在其平台单独检查项目余额、使用量、模型单价和限额；不要将 OpenAI 密钥写入参数、仓库或命令行日志。更新现有环境前，先用 `aws sts get-caller-identity` 确认账号，在 Billing/Cost Explorer 查看当前月和最近完整月的实际成本、预算状态及 DynamoDB、Lambda、S3、CloudFront、CloudWatch 用量，再在 OpenAI 控制台核对同一期间的使用量和费用。按面试题数估算新增请求后，确认剩余额度和预计费用。
+按 730 小时/月、单可用区 `db.t4g.micro`、20 GB gp3、一个 NAT 网关和一个公网 IPv4 估算。2026-11-23 从 AWS 官方 Price List 核对的悉尼费率如下，均未扣除账号额度或抵扣：
 
-## 创建与发布
+| 固定资源 | 费率 | 730 小时/月估算 |
+| --- | ---: | ---: |
+| RDS MySQL `db.t4g.micro` | US$0.025/小时 | US$18.25 |
+| RDS gp3 20 GB | US$0.138/GB 月 | US$2.76 |
+| NAT 网关 | US$0.059/小时 | US$43.07 |
+| NAT 公网 IPv4 | US$0.005/小时 | US$3.65 |
 
-需要 AWS CLI、SAM CLI、Docker、Node.js 24+、Python 3.11+、对目标账号的部署权限，以及已启用的 AWS 账单访问。镜像和 Lambda 都指定单一 `arm64` 架构；x86 开发机需要能执行 Docker 跨架构构建。以下命令以仓库根目录为工作目录；`--guided` 首次运行时选择 `ap-southeast-2`、提供唯一 Cognito 前缀和接收账单提醒的邮箱，并允许创建 IAM 角色。CloudFront 可在部署后数分钟才完成分发。Vue 工作台从 `frontend/` 通过 Vite 构建到 `web/static/vue/`；本地运行 Python 网页前执行 `cd frontend && npm ci && npm run build`，前端测试运行 `cd frontend && npm test`。云端镜像在 Docker 构建中自行生成该产物，`publish_site.py` 也会先执行前端构建，再上传静态文件并在临时目录生成公开的站点配置，不提交账号配置。
+上述固定部分约 **US$67.73/月**；加上原有 API、Lambda、S3、CloudFront、日志等规划量，`python3 infra/cost_estimate.py` 给出 **US$69.64–76.13/月**。这不是封顶费用，尚未计入 NAT 数据处理、跨可用区传输、额外备份/快照、CPU 突发、税和独立计费的 OpenAI API。[RDS 定价](https://aws.amazon.com/rds/mysql/pricing/)、[NAT 与公网 IPv4 定价](https://aws.amazon.com/vpc/pricing/)可用于重新核对。现有 **US$50/月预算只是提醒，不会停机**，按此配置即使闲置也可能触发告警。部署前在 AWS Pricing Calculator 复核本区域价格，并核对 AWS 当前实际用量和 OpenAI 用量。
 
-```bash
+数据库仅在两段私有子网内，禁止公网访问。API、后台和建表 Lambda 进入同一 VPC，通过一个 NAT 网关访问 OpenAI、Secrets Manager 和 Lambda API；S3 走网关型 VPC endpoint。[Lambda 接入 VPC 后需要显式外网路径](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc-internet.html)。单 NAT 网关是测试环境的成本折中，所在可用区故障会影响私网出站。数据库为单可用区，不能作为生产高可用设计。
+
+## 构建、部署和建表
+
+需要 AWS CLI、SAM CLI、Docker、Node.js 24+、Python 3.11+ 和目标账号的部署权限。部署前用 `aws sts get-caller-identity` 核对账号；查看 `cvbuilder-sydney-test` 的 CloudFormation 变更集，确保 Cognito、站点桶、临时桶及 OpenAI Secret 不被替换或删除。不要在命令行、仓库或日志中写数据库或 OpenAI 密码。
+
+```sh
+sam validate --lint --template-file infra/template.yaml
 sam build --template-file infra/template.yaml
-sam deploy --guided --region ap-southeast-2 --capabilities CAPABILITY_IAM
-python3 infra/publish_site.py --stack <stack-name> --region ap-southeast-2
+sam deploy --guided --stack-name cvbuilder-sydney-test --region ap-southeast-2 --capabilities CAPABILITY_IAM
 ```
 
-从堆栈输出读取 `SecretArn`，在 AWS Secrets Manager 控制台把占位随机值替换为实际 OpenAI API 密钥。该密钥仅授予后台 Lambda 读取；不要将值放进 shell 历史或镜像。可使用 [Secrets Manager 控制台](https://docs.aws.amazon.com/secretsmanager/latest/userguide/manage_update-secret-value.html)完成编辑。`publish_site.py` 输出网页 HTTPS 地址；`ApiUrl` 是独立 API 地址，`HostedUiDomain` 是 Cognito 登录地址。网页通过部署生成的 `/static/cloud-config.js` 加载这些公开 ID 和 URL。
+现有堆栈的 `BillingEmail` 和 `CognitoDomainPrefix` 参数应沿用原值。SAM 镜像构建包含 `migrations/001_initial_mysql.sql`；新部署输出 `MySQLMigrationFunction`。RDS 创建完成后，在恢复 API 使用前对该函数**调用一次**，由它在私网中连接数据库并执行建表脚本。示例命令：
 
-后续更新重复执行 `sam build`、`sam deploy` 和 `publish_site.py`。更新第五阶段代码前，运行 `sam validate --template-file infra/template.yaml --lint` 和完整测试，查看 SAM 变更集及资源差异，尤其确认 DynamoDB 表、OpenAI 密钥、Cognito 用户池及临时桶不会被替换或删除。现有 API Lambda 已有 DynamoDB、临时 S3 和后台 Lambda 调用权限；后台 Lambda 已有 DynamoDB、临时 S3 与密钥读取权限，900 秒超时可供招聘文件提取和逐题面试使用。新增任务类型无需扩大 IAM 权限。容器镜像仅复制应用代码、`web/`、三份规范模板和 Schema，不复制本机 JSON、测试夹具或样例导出。`Dockerfile.cloud` 安装 LibreOffice 与 Noto CJK；云端实际 PDF 仍需按验收步骤确认字体替换及分页。
+```sh
+aws lambda invoke --region ap-southeast-2 --function-name <MySQLMigrationFunction 输出值> --cli-binary-format raw-in-base64-out --payload '{}' /tmp/cvbuilder-migration-result.json
+```
 
-## 验收与运行
+检查命令输出没有 `FunctionError`，再检查响应文件显示迁移成功，且后续重复调用安全。不要把响应文件提交到仓库。建表失败时先修复数据库连接、密钥或 SQL，不要让页面写入未建表的库。建表后才运行 `python3 infra/publish_site.py --stack cvbuilder-sydney-test --region ap-southeast-2` 发布静态页面。`/static/cloud-config.js` 只包含公开的 API/Cognito 地址和 ID，不包含密钥或数据库地址。
 
-1. 用两组明确标为虚构的测试账号，在 CloudFront 页面完成注册、邮件确认、登录和退出；未带 Bearer access token 调用 `/api/resume` 应得到 401。
-2. 分别录入/导入并确认基础简历，建立多公司与多岗位。每个岗位只调用 AI 生成 V1；编辑 V1 后保存为 V2，再编辑 V2 保存为 V3，确认旧版保留且不能再次调用 AI。测试公司和岗位改名、删除公司及岗位时的级联清理、单独删除任意版本；删除版本后编号不重排、不复用，删光版本也不能再次调用 AI。跨账号读取、编辑、删除、重置、导出都不能影响另一账号；并发保存不得重复编号。
-3. 重新调用 API（模拟 Lambda 实例替换），确认版本、模块顺序、外观和任务状态仍在。用接近 15 MB 的**虚构测试文件**验证上传限制；让后台任务失败一次，确认页面显示可理解的失败信息。
-4. 对三份模板分别下载 DOCX/PDF，实际打开或渲染检查中文字体、换行、分页、重叠、截断和残留 `{{...}}`。记录 PDF 转换时间；仅通过自动化单元测试不能代替此项。
-5. 查 CloudWatch 两个 Lambda 日志组和失败告警，确认日志没有简历正文、上传内容或密钥。S3 生命周期为整个临时桶 2 天，覆盖 `uploads/`、`exports/`、`results/`；按 S3 生命周期的异步执行特性复查对象是否到期清理。
+RDS 生成并管理主账号密钥；Lambda 只得到密钥 ARN，运行时从 Secrets Manager 读取用户名和密码。API 与后台 Lambda 继续按 Cognito 用户 ID 隔离记录。库使用自动备份保留 1 天；删除或替换数据库时 CloudFormation 创建快照，快照会产生后续费用。此测试部署使用数据库主账号，正式运营前应改为最小权限的应用账号。
 
-第五阶段还需用上述两个虚构账号完成以下验收：
+## 验收
 
-1. 粘贴及上传 DOCX、DOC、文本型 PDF 招聘要求；确认提取文本可编辑，取消或上传失败不覆盖原要求，扫描版 PDF 明确报无可提取文本。修改职位要求后再次读取，确认旧版简历和旧面试保留原要求快照，V1 生成过程中修改要求也不使正文与快照错配。
-2. 从同一版本分别保存两个后续版本，检查来源气泡的分支、键盘操作和窄屏滚动；删除来源版本后，子版本和已有面试记录可读，界面标明来源或关联版本已删除。
-3. 选定版本进行逐题文字面试，覆盖首次出题、回答前展开参考答案、回答、反馈、追问、下一题、结束和最近场次查看。开始同一职位的新面试后确认旧场次删除，其他职位记录保留。刷新页面并重新调用 API，确认问答持久；故意使一次后台任务失败，确认已提交回答保留且页面显示失败状态。跨账号不得读取、更新或删除另一账号的面试及上传任务；删除职位、公司和重置全部数据后检查关联记录清理。
-4. 读取面试任务与 API 日志，只允许记录任务类型和安全错误元数据，不得记录基础简历、岗位正文、回答、反馈或密钥。核对 `uploads/` 文件在提取成功与失败后均及时删除；生命周期仍覆盖滞留对象。最后做现有三模板 DOCX/PDF 的针对性回归检查。
-
-CloudWatch 日志保留 14 天。DynamoDB 开启 PITR，表和密钥设置 `Retain` 以避免删除堆栈时误删测试数据。需要恢复时，在 DynamoDB 控制台选择时间点恢复到**新表**，先验证内容，再更新部署配置指向恢复表；恢复会产生额外费用。运行成本按月在 AWS Cost Explorer 按服务核对，并留意 ECR 镜像、PITR、CloudFront 出站和日志增长。
-
-单条基础简历、岗位或版本写入在 350 KiB 时由应用拒绝，以留出 DynamoDB 400 KiB 单项限制的余量。15 MB 是上传文件大小上限，并非可保存的结构化简历大小。重置与同一账号的新写入同时发生时不保证原子清空，验收时应先停止该账号的新任务再重置。
+1. 建表函数执行成功，重复执行不会产生错误；API 与后台 Lambda 均能通过 VPC 私网访问 RDS，后台仍能调用 OpenAI、访问临时 S3 和读取密钥。
+2. 用两个明确标为虚构的账号验证登录、基础简历、公司/职位、版本及面试数据互相隔离。并发创建 V1 和编辑版本时编号不重复；刷新和 Lambda 实例替换后数据仍在。
+3. 验证文件上传、提取和导出后台任务的成功与失败路径；临时 S3 对象仍按两天生命周期删除，未完成的分段上传按一天清理。
+4. 三份规范化模板的 DOCX/PDF 用虚构中文内容实际渲染，检查字体、换行、分页、重叠、截断和残留占位符。检查 CloudWatch 日志没有简历正文、面试回答或密钥。
+5. 查看 RDS、NAT、公网 IPv4 和原服务实际费用，确认 US$50 提醒状态；OpenAI API 费用单独核对。
 
 ## 删除测试环境
 
-先确认导出与备份需求。清空静态桶和临时桶，随后执行 `sam delete --stack-name <stack-name> --region ap-southeast-2`。堆栈删除会保留 DynamoDB 表和 OpenAI 密钥；确认无需恢复后，再分别在 DynamoDB 与 Secrets Manager 控制台删除。ECR 中由 SAM 创建的镜像仓库及 CDK/SAM bootstrap 资源可能需要另行核对。删除后检查 CloudFormation、S3、Lambda、API Gateway、CloudFront、Cognito、CloudWatch、SNS、Budgets 和 ECR 账单项，避免继续计费。
+先确认测试数据、快照和静态文件是否仍需保留；清空静态及临时 S3 桶后删除堆栈。`MySQLDatabase` 的 `DeletionPolicy: Snapshot` 会保留最终快照，`OpenAISecret` 继续 `Retain`；两者需要随后单独核对和清理，以停止相关费用。还应检查 ECR 镜像、日志组、NAT 公网 IPv4、CloudFront、Cognito 和预算等账单项。

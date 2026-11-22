@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /var/task
 COPY pyproject.toml ./
 COPY cvbuilder ./cvbuilder
+COPY migrations ./migrations
 COPY templates ./templates
 COPY docs/schemas ./docs/schemas
 COPY web ./web
@@ -28,7 +29,8 @@ RUN python -m pip install --no-cache-dir . awslambdaric \
     && test -x /usr/bin/soffice \
     && test -f templates/template-01.docx \
     && test -f templates/template-02.docx \
-    && test -f templates/template-03.docx
+    && test -f templates/template-03.docx \
+    && test -f migrations/001_initial_mysql.sql
 
 ENTRYPOINT ["python", "-m", "awslambdaric"]
 CMD ["cvbuilder.cloud.handler"]

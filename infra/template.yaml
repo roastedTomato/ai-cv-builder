@@ -17,31 +17,163 @@ Globals:
     Tracing: Active
     Environment:
       Variables:
-        CV_TABLE: !Ref RecordsTable
+        CV_MYSQL_HOST: !GetAtt MySQLDatabase.Endpoint.Address
+        CV_MYSQL_PORT: '3306'
+        CV_MYSQL_DATABASE: cvbuilder
+        CV_MYSQL_SECRET_ARN: !GetAtt MySQLDatabase.MasterUserSecret.SecretArn
         CV_FILES_BUCKET: !Ref TemporaryFiles
         CV_OPENAI_SECRET_ARN: !Ref OpenAISecret
+    VpcConfig:
+      SecurityGroupIds: [!Ref LambdaSecurityGroup]
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
 
 Resources:
-  RecordsTable:
-    Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+  AppVpc:
+    Type: AWS::EC2::VPC
     Properties:
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: pk
-          AttributeType: S
-        - AttributeName: sk
-          AttributeType: S
-      KeySchema:
-        - AttributeName: pk
-          KeyType: HASH
-        - AttributeName: sk
-          KeyType: RANGE
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-      SSESpecification:
-        SSEEnabled: true
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref AppVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AppVpc
+      CidrBlock: 10.42.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AppVpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AppVpc
+      CidrBlock: 10.42.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AppVpc
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  NatElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: PublicDefaultRoute
+    Properties:
+      AllocationId: !GetAtt NatElasticIp.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AppVpc
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref AppVpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref PrivateRouteTable]
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda access to private MySQL and outbound services
+      VpcId: !Ref AppVpc
+
+  MySQLSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL only from app Lambda functions
+      VpcId: !Ref AppVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  MySQLSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private MySQL subnets for fictional test environment
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+  MySQLDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceClass: db.t4g.micro
+      Engine: mysql
+      EngineVersion: 8.4.9
+      DBName: cvbuilder
+      MasterUsername: cvbuilder_admin
+      ManageMasterUserPassword: true
+      AllocatedStorage: '20'
+      StorageType: gp3
+      StorageEncrypted: true
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      DBSubnetGroupName: !Ref MySQLSubnetGroup
+      VPCSecurityGroups: [!Ref MySQLSecurityGroup]
+      Port: '3306'
 
   TemporaryFiles:
     Type: AWS::S3::Bucket
@@ -234,12 +366,16 @@ Resources:
           CV_COGNITO_CLIENT_ID: !Ref UserPoolClient
           CV_CORS_ORIGIN: !Sub 'https://${Distribution.DomainName}'
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RecordsTable
+        - AWSLambdaVPCAccessExecutionRole
         - S3CrudPolicy:
             BucketName: !Ref TemporaryFiles
         - LambdaInvokePolicy:
             FunctionName: !Ref WorkerFunction
+        - Statement:
+            - Sid: ReadMySQLCredential
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt MySQLDatabase.MasterUserSecret.SecretArn
       Events:
         ProtectedApi:
           Type: HttpApi
@@ -274,15 +410,38 @@ Resources:
       EphemeralStorage:
         Size: 1024
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RecordsTable
+        - AWSLambdaVPCAccessExecutionRole
         - S3CrudPolicy:
             BucketName: !Ref TemporaryFiles
         - Statement:
+            - Sid: ReadMySQLCredential
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt MySQLDatabase.MasterUserSecret.SecretArn
             - Sid: ReadOpenAIKey
               Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource: !Ref OpenAISecret
+
+  MigratorFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerContext: ..
+      Dockerfile: Dockerfile.cloud
+      DockerTag: migrator
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: [cvbuilder.mysql_migrate.handler]
+      MemorySize: 512
+      Timeout: 120
+      Policies:
+        - AWSLambdaVPCAccessExecutionRole
+        - Statement:
+            - Sid: ReadMySQLCredential
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt MySQLDatabase.MasterUserSecret.SecretArn
 
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
@@ -423,8 +582,10 @@ Outputs:
     Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
   HostedUiDomain:
     Value: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
-  TableName:
-    Value: !Ref RecordsTable
+  MySQLMigrationFunction:
+    Value: !Ref MigratorFunction
+  MySQLHost:
+    Value: !GetAtt MySQLDatabase.Endpoint.Address
   TemporaryBucket:
     Value: !Ref TemporaryFiles
   SecretArn:
