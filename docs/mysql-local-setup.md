@@ -1,0 +1,22 @@
+# 本地 MySQL 运行说明
+
+本项目使用 MySQL 8.4 的独立数据库。首次运行前，在本机 MySQL 中创建一个空库和具有该库读写权限的专用账号；不要将密码写入仓库、命令行历史或测试输出。建表脚本可重复执行：
+
+```sh
+mysql --database=cvbuilder < migrations/001_initial_mysql.sql
+```
+
+本地网页进程从以下环境变量读取连接信息：
+
+| 变量 | 用途 |
+| --- | --- |
+| `CV_MYSQL_DATABASE` | 数据库名 |
+| `CV_MYSQL_USER` | 数据库账号 |
+| `CV_MYSQL_PASSWORD` | 数据库密码 |
+| `CV_MYSQL_HOST` | TCP 主机；本地默认 `127.0.0.1` |
+| `CV_MYSQL_PORT` | TCP 端口；默认 `3306` |
+| `CV_MYSQL_SOCKET` | 可选的本机 Unix socket；设置后优先使用它 |
+
+本地网页使用固定的本地用户标识；它仅监听回环地址，不提供多用户登录。未来云端入口必须从已验证的登录身份取得用户 ID。
+
+清空旧 JSON 后，MySQL 从空库开始。旧文件不会被自动读取或导入。每次调整表结构，应增加编号迁移文件并在虚构测试数据库中先验证。

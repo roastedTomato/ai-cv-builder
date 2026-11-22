@@ -38,8 +38,7 @@ from . import ai
 from .cli import ROOT, read_json
 from .importers import ImportErrorBase, extract_text
 from .importers.fields import extract_personal, keep_explicit_skills
-from .storage import ResumeStore
-from .job_storage import JobRecordStore
+from .mysql_storage import MySQLResumeStore, MySQLJobStore
 from .templates import convert_to_pdf, fill_template, fill_template_text, fill_template_modular
 
 SCHEMAS = ROOT / "docs" / "schemas"
@@ -48,8 +47,8 @@ app = FastAPI(title="本地简历生成平台")
 logger = logging.getLogger("cvbuilder.web")
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 pages = Jinja2Templates(directory=WEB_DIR / "templates")
-store = ResumeStore()
-job_store = JobRecordStore()
+store = MySQLResumeStore()
+job_store = MySQLJobStore()
 drafts: dict[str, dict[str, Any]] = {}
 RESUME_MODULES = {"summary", "education", "work", "projects", "skills", "certificates"}
 TEMPLATE_IDS = {f"template-{number:02d}" for number in range(1, 4)}
@@ -258,7 +257,8 @@ async def create_job_version(job_id: str):
     try:
         return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"}, job_text=job["job_text"])
     except ValueError as exc:
-        raise HTTPException(409, detail={"code": "version_exists", "message": str(exc)}) from exc
+        code = "conflict" if "请刷新后重试" in str(exc) else "version_exists"
+        raise HTTPException(409, detail={"code": code, "message": str(exc)}) from exc
 
 
 @app.post("/api/jobs/{job_id}/versions/{version_id}/edits")
