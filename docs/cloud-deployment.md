@@ -17,7 +17,7 @@
 | NAT 网关 | US$0.059/小时 | US$43.07 |
 | NAT 公网 IPv4 | US$0.005/小时 | US$3.65 |
 
-上述固定部分约 **US$67.73/月**；加上原有 API、Lambda、S3、CloudFront、日志等规划量，`python3 infra/cost_estimate.py` 给出 **US$69.64–76.13/月**。这不是封顶费用，尚未计入 NAT 数据处理、跨可用区传输、额外备份/快照、CPU 突发、税和独立计费的 OpenAI API。[RDS 定价](https://aws.amazon.com/rds/mysql/pricing/)、[NAT 与公网 IPv4 定价](https://aws.amazon.com/vpc/pricing/)可用于重新核对。现有 **US$50/月预算只是提醒，不会停机**，按此配置即使闲置也可能触发告警。部署前在 AWS Pricing Calculator 复核本区域价格，并核对 AWS 当前实际用量和 OpenAI 用量。
+上述固定部分约 **US$67.73/月**；加上原有 API、Lambda、S3、CloudFront、日志等规划量，`python3 infra/cost_estimate.py` 给出 **US$69.64–76.13/月**。这不是封顶费用，尚未计入 NAT 数据处理、跨可用区传输、额外备份/快照、CPU 突发、税和独立计费的 OpenAI API。[RDS 定价](https://aws.amazon.com/rds/mysql/pricing/)、[NAT 与公网 IPv4 定价](https://aws.amazon.com/vpc/pricing/)可用于重新核对。用户已批准部署并将项目预算提醒改为 **US$100/月**；预算只是提醒，不会停机。为避免替换预算资源，CloudFormation 中原有 `-monthly-usd50` 名称暂保留，实际提醒阈值以 `BudgetLimit` 为准。部署前在 AWS Pricing Calculator 复核本区域价格，并核对 AWS 当前实际用量和 OpenAI 用量。
 
 数据库仅在两段私有子网内，禁止公网访问。API、后台和建表 Lambda 进入同一 VPC，通过一个 NAT 网关访问 OpenAI、Secrets Manager 和 Lambda API；S3 走网关型 VPC endpoint。[Lambda 接入 VPC 后需要显式外网路径](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc-internet.html)。单 NAT 网关是测试环境的成本折中，所在可用区故障会影响私网出站。数据库为单可用区，不能作为生产高可用设计。
 
@@ -47,7 +47,7 @@ RDS 生成并管理主账号密钥；Lambda 只得到密钥 ARN，运行时从 S
 2. 用两个明确标为虚构的账号验证登录、基础简历、公司/职位、版本及面试数据互相隔离。并发创建 V1 和编辑版本时编号不重复；刷新和 Lambda 实例替换后数据仍在。
 3. 验证文件上传、提取和导出后台任务的成功与失败路径；临时 S3 对象仍按两天生命周期删除，未完成的分段上传按一天清理。
 4. 三份规范化模板的 DOCX/PDF 用虚构中文内容实际渲染，检查字体、换行、分页、重叠、截断和残留占位符。检查 CloudWatch 日志没有简历正文、面试回答或密钥。
-5. 查看 RDS、NAT、公网 IPv4 和原服务实际费用，确认 US$50 提醒状态；OpenAI API 费用单独核对。
+5. 查看 RDS、NAT、公网 IPv4 和原服务实际费用，确认 US$100 提醒状态；OpenAI API 费用单独核对。
 
 ## 删除测试环境
 

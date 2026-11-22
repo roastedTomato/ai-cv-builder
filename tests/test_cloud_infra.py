@@ -35,6 +35,7 @@ class PublishSiteTests(unittest.TestCase):
         self.assertIn("PubliclyAccessible: false", database)
         self.assertIn("StorageEncrypted: true", database)
         self.assertIn("EngineVersion: 8.4.9", database)
+        self.assertRegex(template, r"BudgetLimit:\s*\n\s*Amount: 100")
         self.assertNotIn("RecordsTable:", template)
         self.assertNotIn("DynamoDBCrudPolicy:", template)
         self.assertIn("S3CrudPolicy:", api)

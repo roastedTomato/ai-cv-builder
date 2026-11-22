@@ -5,7 +5,7 @@ Description: Fictional-account resume builder test environment in Sydney
 Parameters:
   BillingEmail:
     Type: String
-    Description: Email address to receive the USD 50 monthly AWS budget alert
+    Description: Email address to receive the USD 100 monthly AWS budget alert
   CognitoDomainPrefix:
     Type: String
     AllowedPattern: '^[a-z0-9][a-z0-9-]{5,62}$'
@@ -545,7 +545,7 @@ Resources:
         BudgetType: COST
         TimeUnit: MONTHLY
         BudgetLimit:
-          Amount: 50
+          Amount: 100
           Unit: USD
       NotificationsWithSubscribers:
         - Notification:
