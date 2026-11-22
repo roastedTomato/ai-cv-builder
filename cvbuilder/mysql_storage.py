@@ -9,6 +9,29 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 
+_cached_db_secret: tuple[str, dict[str, str]] | None = None
+
+
+def _database_credentials() -> tuple[str, str]:
+    """Read local credentials or the cloud secret without exposing its value."""
+    global _cached_db_secret
+    secret_arn = os.environ.get("CV_MYSQL_SECRET_ARN")
+    if secret_arn:
+        if _cached_db_secret is None or _cached_db_secret[0] != secret_arn:
+            import boto3
+            value = boto3.client("secretsmanager").get_secret_value(SecretId=secret_arn)["SecretString"]
+            credentials = json.loads(value)
+            if not isinstance(credentials, dict) or not credentials.get("username") or not credentials.get("password"):
+                raise RuntimeError("MySQL 密钥格式无效")
+            _cached_db_secret = (secret_arn, credentials)
+        credentials = _cached_db_secret[1]
+        return credentials["username"], credentials["password"]
+    user = os.environ.get("CV_MYSQL_USER")
+    if not user:
+        raise RuntimeError("MySQL 用户未配置")
+    return user, os.environ.get("CV_MYSQL_PASSWORD", "")
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -36,12 +59,12 @@ class MySQLStore:
     def _connect(self):
         import pymysql
         database = os.environ.get("CV_MYSQL_DATABASE")
-        user = os.environ.get("CV_MYSQL_USER")
-        if not database or not user:
-            raise RuntimeError("MySQL 数据库名称或用户未配置")
+        if not database:
+            raise RuntimeError("MySQL 数据库名称未配置")
+        user, password = _database_credentials()
         options: dict[str, Any] = {
             "database": database, "user": user,
-            "password": os.environ.get("CV_MYSQL_PASSWORD", ""),
+            "password": password,
             "charset": "utf8mb4", "autocommit": False,
             "cursorclass": pymysql.cursors.DictCursor,
             "connect_timeout": 5, "read_timeout": 20, "write_timeout": 20,

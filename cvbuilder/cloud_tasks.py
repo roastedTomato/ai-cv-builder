@@ -258,7 +258,7 @@ def _export(task_id: str, user_id: str, store: Any, task_input: dict[str, Any], 
 def process_task(user_id: str, task_id: str, *, store: Any = None, s3_client: Any = None, bucket: str | None = None) -> dict[str, Any]:
     """Execute one queued task; return its final public status record."""
     if store is None:
-        from .cloud_storage import CloudStore
+        from .mysql_storage import MySQLStore as CloudStore
         store = CloudStore(user_id)
     task = store.get_task(task_id)
     if not task:

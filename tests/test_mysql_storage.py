@@ -3,6 +3,7 @@ import os
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from cvbuilder.mysql_storage import MySQLJobStore, MySQLResumeStore, MySQLStore
 
@@ -147,6 +148,18 @@ class MySQLStoreTests(unittest.TestCase):
         self.assertEqual(resume.load(), {"name": "虚构测试用户"})
         resume.reset()
         self.assertIsNone(resume.load())
+
+    def test_cloud_credentials_are_loaded_from_secret(self):
+        from cvbuilder import mysql_storage
+        from types import SimpleNamespace
+        fake = SimpleNamespace(get_secret_value=lambda **_: {
+            "SecretString": '{"username":"fictional_user","password":"fictional_password"}'})
+        with patch.dict(os.environ, {"CV_MYSQL_SECRET_ARN": "fictional-secret-arn"}), \
+             patch("boto3.client", return_value=fake):
+            mysql_storage._cached_db_secret = None
+            self.assertEqual(mysql_storage._database_credentials(),
+                             ("fictional_user", "fictional_password"))
+        mysql_storage._cached_db_secret = None
 
 
 if __name__ == "__main__":

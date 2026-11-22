@@ -18,7 +18,7 @@ try:
 except ImportError:  # Local unit tests can run before the cloud extra is installed.
     Mangum = None
 
-from .cloud_storage import CloudStore
+from .mysql_storage import MySQLStore as CloudStore
 from .web import validate, validate_required_base_fields, validate_editor_payload
 
 
