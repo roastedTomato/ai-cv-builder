@@ -125,6 +125,9 @@ async def safe_error_handler(request: Request, exc: Exception):
     from fastapi.responses import JSONResponse
     # Never return provider exception text: it can contain sensitive request data.
     logger.error("Unhandled request error path=%s type=%s", request.url.path, type(exc).__name__)
+    from pymysql.err import InterfaceError, OperationalError
+    if (isinstance(exc, RuntimeError) and str(exc).startswith("MySQL ")) or isinstance(exc, (InterfaceError, OperationalError)):
+        return JSONResponse(status_code=503, content={"error": {"code": "database_unavailable", "message": "无法连接本地 MySQL，请检查数据库服务及 CV_MYSQL_* 环境变量。"}})
     return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "操作失败，请检查配置后重试。"}})
 
 

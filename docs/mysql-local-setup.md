@@ -19,4 +19,8 @@ mysql --database=cvbuilder < migrations/001_initial_mysql.sql
 
 本地网页使用固定的本地用户标识；它仅监听回环地址，不提供多用户登录。未来云端入口必须从已验证的登录身份取得用户 ID。
 
+设置连接环境变量后，再从**同一个终端**运行 `.venv/bin/cvbuilder-web`，打开 `http://127.0.0.1:8000`。项目不会自动读取仓库中的 `.env`。若未设置数据库名或账号、MySQL 未启动，页面读取 API 会返回 `database_unavailable` 并提示检查连接配置。
+
+本机已安装 `/usr/local/mysql` 时，也可运行 `bash scripts/run_local_acceptance.sh` 一键启动独立的验收数据库和网页。该数据库仅监听私有 Unix socket，使用空白虚构测试库；数据保存在 `/private/tmp/cvbuilder-local-acceptance-<UID>`，再次运行会复用。请在自己的终端保持命令运行，验收完按 Ctrl+C 停止。
+
 清空旧 JSON 后，MySQL 从空库开始。旧文件不会被自动读取或导入。每次调整表结构，应增加编号迁移文件并在虚构测试数据库中先验证。

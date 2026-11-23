@@ -23,6 +23,15 @@ class WebContractTests(unittest.TestCase):
         self.assertIn('host="127.0.0.1"', source)
         self.assertIn("store=False", Path(self.web.ai.__file__).read_text(encoding="utf-8"))
 
+    def test_missing_mysql_configuration_reports_actionable_error(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(self.web.app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+        with patch.object(self.web.store, "load", side_effect=RuntimeError("MySQL 数据库名称未配置")):
+            response = client.get("/api/resume")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "database_unavailable")
+        self.assertIn("CV_MYSQL", response.json()["error"]["message"])
+
     def test_company_job_and_version_management_routes(self):
         from fastapi.testclient import TestClient
         from tempfile import TemporaryDirectory
