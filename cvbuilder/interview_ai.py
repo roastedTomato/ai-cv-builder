@@ -202,8 +202,8 @@ def generate_question(session: dict[str, Any], confirmed_resume: dict[str, Any])
     if len(turns) >= MAX_QUESTIONS:
         raise ValueError("本场面试已达到 12 题上限。")
     category = QUESTION_CATEGORIES[len(turns) % len(QUESTION_CATEGORIES)]
-    previous = [{"question": turn.get("question", ""), "answer": turn.get("answer", ""),
-                 "follow_up": turn.get("follow_up", "")} for turn in turns]
+    previous = [{"question": turn.get("question", ""), "answer": turn.get("answer", "")}
+                for turn in turns]
     catalog = _confirmed_catalog(confirmed_resume)
     payload = {
         "category": category,
@@ -217,7 +217,7 @@ def generate_question(session: dict[str, Any], confirmed_resume: dict[str, Any])
     result = _call(
         "interview_question",
         "你是中文模拟面试官。每次仅提出一道清晰、具体的问题，类别必须与输入 category 一致。"
-        "可根据岗位要求、所选岗位简历草稿和此前回答追问，但它们均不是已确认的个人事实。"
+        "可根据岗位要求、所选岗位简历草稿和此前回答调整题目，但不要生成追问；它们均不是已确认的个人事实。"
         "已确认个人事实仅来自 confirmed_base_resume_facts；不要把其他输入中的经历、技能、证书或数字称为候选人已确认事实。"
         "不要在问题中断言未经确认的经历。若信息不足，用开放式提问。"
         "同时给出供用户答题前查看的参考答案。根据问题，从 confirmed_base_resume_sections 选取最相关的经历，"
@@ -258,7 +258,7 @@ def generate_reference_answer(session: dict[str, Any], confirmed_resume: dict[st
 
 
 def generate_feedback(session: dict[str, Any], confirmed_resume: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate the latest answer while separating fact sources in the output."""
+    """Return a brief evaluation and answer points for the latest answer."""
     turns = session.get("turns") or []
     if not turns or not isinstance(turns[-1].get("answer"), str) or not turns[-1]["answer"].strip():
         raise ValueError("尚未提交文字回答。")
@@ -274,25 +274,17 @@ def generate_feedback(session: dict[str, Any], confirmed_resume: dict[str, Any])
     }
     fields = {
         "evaluation": {"type": "string"},
-        "suggestions": {"type": "string"},
         "answer_points": {"type": "string"},
-        "follow_up": {"type": "string"},
-        "confirmed_facts": {"type": "array", "items": {"type": "string"}},
-        "user_claims": {"type": "array", "items": {"type": "string"}},
-        "unconfirmed_suggestions": {"type": "array", "items": {"type": "string"}},
     }
     result = _call(
         "interview_feedback",
-        "你是中文模拟面试官。评价本题回答，给出可操作的改进建议和回答要点，可给出一道追问。"
-        "只把 confirmed_base_resume_facts 中逐字存在的条目放进 confirmed_facts；其他来源均不得标成已确认事实。"
-        "用户回答中的个人叙述放进 user_claims，并明确其为用户自述、未经基础简历确认。"
-        "岗位简历草稿和招聘要求中的能力、经历、证书及成果若没有基础简历依据，只能作为待确认建议。"
-        "evaluation、suggestions、answer_points 和 follow_up 不得将这些未经确认的内容写成事实；"
-        "回答要点以通用结构和表达建议为主。不要编造个人经历、技能、证书或数字。",
+        "你是中文模拟面试官。用一两句简短评价本题回答，并给出精炼的回答要点。"
+        "不要生成追问、单独的改进建议或事实分类。"
+        "只有 confirmed_base_resume_facts 是已确认的个人事实。用户回答、岗位简历草稿和招聘要求"
+        "可用于理解问题，但不得将其中未经确认的经历、技能、证书或成果写成个人事实。"
+        "不要编造个人经历、技能、证书或数字。",
         payload, fields,
     )
-    if not result["evaluation"].strip() or not result["suggestions"].strip() or not result["answer_points"].strip():
+    if not result["evaluation"].strip() or not result["answer_points"].strip():
         raise ai.ModelResponseError("模型反馈内容不完整")
-    if any(fact not in catalog for fact in result["confirmed_facts"]):
-        raise ai.ModelResponseError("模型把未经确认内容标成了事实")
     return result

@@ -209,7 +209,7 @@ def _interview_feedback(store: Any, task_input: dict[str, Any]) -> dict[str, Any
     _load_openai_key()
     feedback = interview_ai.generate_feedback(session, resume)
     revised = [*turns[:-1], {**turns[-1], "feedback": feedback,
-                              "follow_up": feedback.get("follow_up") or None,
+                              "follow_up": None,
                               "feedback_at": datetime.now(timezone.utc).isoformat()}]
     updated = store.update_interview(session_id,
         {"turns": revised, "status": "feedback_ready", "error": None},

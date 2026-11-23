@@ -16,6 +16,7 @@ export interface Version {
   saved_at?: string;
   source_version_id?: string;
   source_version_number?: number;
+  job_text?: string;
   resume_content: ResumeContent;
   module_order: string[];
   visual_settings: VisualSettings;

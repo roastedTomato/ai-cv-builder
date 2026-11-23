@@ -304,8 +304,7 @@ class CloudTaskTests(unittest.TestCase):
         self.store.update_interview(session_id, {"status": "feedback_pending",
             "turns": [{**turn, "answer": "虚构测试回答"}]}, expected_status="awaiting_answer")
         self.store.queue("interview_feedback", {"session_id": session_id}, "fictional-feedback")
-        feedback = {"evaluation": "表达清楚", "suggestions": "增加结构", "answer_points": "先概括再举例",
-                    "follow_up": "请说明一个例子", "confirmed_facts": [], "user_claims": [], "unconfirmed_suggestions": []}
+        feedback = {"evaluation": "表达清楚。", "answer_points": "先概括再举例。"}
         with patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback", return_value=feedback):
             second = self.run_task("fictional-feedback")
         self.assertEqual(second["status"], "succeeded")
@@ -313,6 +312,7 @@ class CloudTaskTests(unittest.TestCase):
         self.assertEqual(saved["status"], "feedback_ready")
         self.assertEqual(saved["turns"][-1]["answer"], "虚构测试回答")
         self.assertEqual(saved["turns"][-1]["feedback"], feedback)
+        self.assertIsNone(saved["turns"][-1]["follow_up"])
         self.assertEqual(saved["turns"][-1]["reference_answer"], "请依据已确认经历介绍自己。")
 
     def test_interview_feedback_failure_keeps_submitted_answer(self):

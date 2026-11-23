@@ -1,32 +1,21 @@
 <script setup lang="ts">
-import type { Company, Job, Version } from '../types';
-import { versionDate } from '../types';
+import type { Company, Job } from '../types';
 
 defineProps<{
   companies: Company[];
   selectedCompanyId: string | null;
   selectedJobId: string | null;
-  selectedVersionId: string | null;
 }>();
 
 const emit = defineEmits<{
   (event: 'select-company', company: Company): void;
   (event: 'select-job', company: Company, job: Job): void;
-  (event: 'select-version', version: Version): void;
   (event: 'rename-company', company: Company): void;
   (event: 'delete-company', company: Company): void;
   (event: 'edit-job', company: Company, job: Job): void;
   (event: 'delete-job', job: Job): void;
-  (event: 'delete-version', job: Job, version: Version): void;
   (event: 'add-job'): void;
 }>();
-
-function versionLabel(job: Job, version: Version): string {
-  const source = version.source_version_id && !job.versions.some(item => item.id === version.source_version_id)
-    ? `来源 V${version.source_version_number || '?'} 已删除`
-    : version.source_version_number ? `来源 V${version.source_version_number}` : '初始版本';
-  return `V${version.number} · ${versionDate(version)} · ${source}`;
-}
 </script>
 
 <template>
@@ -47,15 +36,6 @@ function versionLabel(job: Job, version: Version): string {
             <button class="record-select job-select" type="button" @click="emit('select-job', company, job)">{{ job.title }}</button>
             <button class="tree-action" type="button" title="修改职位" :aria-label="`修改${job.title}`" @click="emit('edit-job', company, job)">改</button>
             <button class="tree-action delete-action" type="button" title="删除职位及其版本" :aria-label="`删除${job.title}及其版本`" @click="emit('delete-job', job)">删</button>
-          </div>
-          <div v-if="job.id === selectedJobId && job.versions?.length" class="version-chips" :aria-label="`${job.title}的简历版本`">
-            <span v-for="version in [...job.versions].sort((a, b) => a.number - b.number)" :key="version.id" class="version-chip-wrap">
-              <button class="version-chip" :class="{ selected: version.id === selectedVersionId }" type="button"
-                :aria-label="versionLabel(job, version)" :aria-pressed="version.id === selectedVersionId"
-                :title="versionLabel(job, version)" @click="emit('select-version', version)">V{{ version.number }}</button>
-              <button class="version-chip-delete" type="button" :aria-label="`删除 V${version.number}`"
-                :title="`删除 V${version.number}`" @click="emit('delete-version', job, version)">×</button>
-            </span>
           </div>
         </div>
         <button v-if="company.id === selectedCompanyId" id="add-job" class="add-job-inline" type="button" @click="emit('add-job')">＋ 添加职位</button>

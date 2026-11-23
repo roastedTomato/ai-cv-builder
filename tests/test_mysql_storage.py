@@ -138,6 +138,21 @@ class MySQLStoreTests(unittest.TestCase):
             self.store.update_task(task["id"], {"status": "running"})
         self.assertIsNone(MySQLStore(self.other).get_task(task["id"]))
 
+    def test_answer_time_survives_turn_rewrite_and_reconnect(self):
+        company, job = self._job()
+        version = self.store.create_version(company["id"], job["id"], self.content, self.order, self.settings)
+        session = self.store.create_interview(job["id"], version["id"])
+        answered_at = "2026-01-02T03:04:05+00:00"  # fictional test timestamp
+        turn = {"id": uuid.uuid4().hex, "question": "虚构测试问题", "category": "自我介绍",
+                "reference_answer": "虚构测试参考答案", "answer": "虚构测试回答",
+                "answered_at": answered_at, "feedback": None, "follow_up": None,
+                "created_at": session["created_at"]}
+        self.store.update_interview(session["id"], {"status": "feedback_pending", "turns": [turn]}, "new")
+        reopened = MySQLStore(self.user)
+        self.assertEqual(reopened.get_interview(session["id"])["turns"][0]["answered_at"], answered_at)
+        reopened.update_interview(session["id"], {"status": "feedback_ready", "turns": [turn]}, "feedback_pending")
+        self.assertEqual(MySQLStore(self.user).get_interview(session["id"])["turns"][0]["answered_at"], answered_at)
+
     def test_local_adapters_have_independent_reset(self):
         resume = MySQLResumeStore(self.user)
         jobs = MySQLJobStore(self.user)

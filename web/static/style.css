@@ -198,6 +198,9 @@ input[readonly], textarea[readonly] { background: #f9f8fb; }
 @media(max-width:930px){.interview-mode{grid-template-columns:minmax(190px,230px) minmax(0,1fr)}}
 @media(max-width:700px){.interview-mode{grid-template-columns:minmax(0,1fr)}.job-details,.interview-panel{padding:14px}.workspace-tabs{flex-wrap:wrap}}
 .reference-answer{margin:14px 0;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#f8f6fb}.reference-answer summary{cursor:pointer;color:#514b77;font-weight:650}.reference-answer p{margin:10px 0 0}
+.interview-version-picker{display:flex;flex-wrap:wrap;align-items:center;gap:12px;max-width:860px;margin:14px auto;padding:14px 18px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.82)}
+.interview-version-picker strong{color:#50476f}.interview-version-buttons{display:flex;flex:1 1 240px;flex-wrap:wrap;gap:8px;min-width:0;max-height:120px;overflow:auto}.interview-version-buttons button[aria-pressed="true"]{background:var(--violet);color:#fff}.interview-version-picker #start-interview-here{margin-left:auto}
+@media(max-width:700px){.interview-version-picker{padding:14px}.interview-version-picker #start-interview-here{width:100%;margin-left:0}}
 
 /* Application tree: company > positions > compact version switches. */
 header h1,.navigation h2,.appearance h2,.base-card details>summary strong{
@@ -218,15 +221,21 @@ header h1,.navigation h2,.appearance h2,.base-card details>summary strong{
 .job-row.selected{background:#f1eef9}
 .job-select{font-size:14px;font-weight:500}
 .record-row.selected .job-select{font-weight:600}
-.version-chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:3px 0 9px;padding-left:10px}
-.version-chip-wrap{position:relative;display:inline-flex}
-.version-chip{min-width:34px;padding:3px 8px;border:1px solid #d8d1e8;border-radius:999px;background:#fff;color:#635b80;font-size:11px;font-weight:450;line-height:1.2}
-.version-chip:hover:not(:disabled){background:#eee9fa;color:#514785;box-shadow:none}
-.version-chip.selected,.version-chip.selected:hover:not(:disabled){background:var(--violet);border-color:var(--violet);color:#fff;box-shadow:none}
-.version-chip-delete{position:absolute;top:-8px;right:-7px;display:grid;place-items:center;width:15px;height:15px;padding:0;border:1px solid #eadde1;border-radius:50%;background:#fff;color:#9d5266;font-size:12px;line-height:1;opacity:0}
-.version-chip-wrap:hover .version-chip-delete,.version-chip-delete:focus-visible{opacity:1}
-.version-chip-delete:hover:not(:disabled){background:#faedf0;color:#903d54;box-shadow:none}
+.version-graph{max-width:860px;max-height:370px;overflow:auto;margin:14px auto;padding:16px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.82)}
+.version-graph.nested{max-height:none;overflow:visible;margin:0;padding:0;border:0;background:none}
+.version-branches{width:max-content;min-width:100%;margin:0;padding:0;list-style:none}
+.version-branches li{position:relative;margin:0 0 12px}
+.version-graph.nested>.version-branches{min-width:0;width:max-content;margin-left:26px;padding-left:22px;border-left:2px solid #c8c0df}
+.version-graph.nested>.version-branches>li::before{content:"";position:absolute;top:25px;left:-22px;width:20px;border-top:2px solid #c8c0df}
+.version-graph-node{display:flex;align-items:center;gap:10px;min-width:max-content}
+.version-bubble{width:56px;height:56px;flex:none;border-radius:50%;background:#eeeafa;color:#514785;font-size:16px}
+.version-bubble.selected{background:var(--violet);color:#fff}
+.version-graph-caption{display:grid;gap:3px;color:#6d6883;font-size:12px}
+.version-graph-delete{width:28px;height:28px;padding:0;border-radius:50%;background:#faedf0;color:#903d54}
+.version-requirements{max-width:860px;margin:18px auto;padding:15px 18px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.82)}
+.version-requirements h3{margin:0}.version-requirements p{margin:10px 0 0;max-height:220px;overflow:auto}
+.doc-personal p{overflow-wrap:anywhere}
 .add-job-inline{margin:8px 0 0 3px;padding:6px 9px;border:1px solid #ddd6ed;background:rgba(255,255,255,.65);color:#685b91;font-size:12px;font-weight:550}
 .add-job-inline:hover:not(:disabled){background:#f1ecf9;color:#564782;box-shadow:none}
 .company-children .hint{margin:8px 5px;font-size:12px}
-@media(max-width:700px){.version-chip-delete{opacity:1}.company-children{margin-left:14px;padding-left:13px}.job-branch::before{left:-13px;width:12px}}
+@media(max-width:700px){.company-children{margin-left:14px;padding-left:13px}.job-branch::before{left:-13px;width:12px}.version-graph{padding:12px}.template-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.export-buttons{grid-template-columns:1fr}}

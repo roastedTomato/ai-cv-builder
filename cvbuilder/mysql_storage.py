@@ -407,18 +407,21 @@ class MySQLStore:
         )
         version_exists = cursor.fetchone() is not None
         cursor.execute(
-            "SELECT id,question,category,reference_answer,answer,feedback,follow_up,created_at "
+            "SELECT id,question,category,reference_answer,answer,answered_at,feedback,follow_up,created_at "
             "FROM interview_turns WHERE user_id=%s AND interview_id=%s ORDER BY ordinal",
             (self.user_id, session_id)
         )
         turns = []
         for turn in cursor.fetchall():
-            turns.append({
+            saved_turn = {
                 "id": turn["id"], "question": turn["question"], "category": turn["category"],
                 "reference_answer": turn["reference_answer"], "answer": turn["answer"],
                 "feedback": _decode(turn["feedback"]), "follow_up": turn["follow_up"],
                 "created_at": _stamp(turn["created_at"]),
-            })
+            }
+            if turn["answered_at"]:
+                saved_turn["answered_at"] = _stamp(turn["answered_at"])
+            turns.append(saved_turn)
         return {
             "id": row["id"], "company_id": row["company_id"],
             "company_name": row["company_name"], "job_id": row["job_id"],
@@ -480,11 +483,13 @@ class MySQLStore:
                     cursor.execute(
                         "INSERT INTO interview_turns "
                         "(user_id,interview_id,ordinal,id,question,category,reference_answer,"
-                        "answer,feedback,follow_up,created_at) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        "answer,answered_at,feedback,follow_up,created_at) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                         (self.user_id, session_id, ordinal, turn.get("id") or uuid.uuid4().hex,
                          turn.get("question") or "", turn.get("category"),
                          turn.get("reference_answer"), turn.get("answer"),
+                         datetime.fromisoformat(turn["answered_at"]).replace(tzinfo=None)
+                         if turn.get("answered_at") else None,
                          _json(turn["feedback"]) if turn.get("feedback") is not None else None,
                          turn.get("follow_up"),
                          datetime.fromisoformat(turn["created_at"]).replace(tzinfo=None)

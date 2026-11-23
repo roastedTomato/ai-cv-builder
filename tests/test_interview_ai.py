@@ -16,14 +16,12 @@ class InterviewAITests(unittest.TestCase):
                         "resume_content": {"skills": [{"title": "量子计算"}]},
                         "turns": [{"question": "请介绍项目", "answer": "我会量子计算（虚构用户自述）"}]}
 
-    def test_feedback_request_separates_all_three_fact_sources(self):
+    def test_feedback_requests_only_brief_evaluation_and_answer_points(self):
         captured = {}
 
         def fake_call(name, instructions, payload, fields):
             captured.update({"name": name, "instructions": instructions, "payload": payload, "fields": fields})
-            return {"evaluation": "回答有条理", "suggestions": "提供具体结构", "answer_points": "背景、行动、结果",
-                    "follow_up": "请详细说明行动", "confirmed_facts": ["维护测试用例"],
-                    "user_claims": ["用户自述会量子计算，待确认"], "unconfirmed_suggestions": ["量子计算需确认"]}
+            return {"evaluation": "回答有条理。", "answer_points": "背景、行动、结果。"}
 
         with patch("cvbuilder.interview_ai._call", side_effect=fake_call):
             feedback = interview_ai.generate_feedback(self.session, self.resume)
@@ -31,14 +29,13 @@ class InterviewAITests(unittest.TestCase):
         self.assertIn("维护测试用例", captured["payload"]["confirmed_base_resume_facts"])
         self.assertNotIn("量子计算", captured["payload"]["confirmed_base_resume_facts"])
         self.assertEqual(captured["payload"]["user_answer_self_report"], self.session["turns"][-1]["answer"])
-        self.assertIn("待确认建议", captured["instructions"])
-        self.assertEqual(feedback["confirmed_facts"], ["维护测试用例"])
-        self.assertNotIn("reference_answer", feedback)
+        self.assertEqual(set(captured["fields"]), {"evaluation", "answer_points"})
+        self.assertIn("一两句简短评价", captured["instructions"])
+        self.assertIn("不得将其中未经确认的经历", captured["instructions"])
+        self.assertEqual(feedback, {"evaluation": "回答有条理。", "answer_points": "背景、行动、结果。"})
 
-    def test_unconfirmed_model_fact_is_rejected(self):
-        output = {"evaluation": "回答有条理", "suggestions": "保持结构", "answer_points": "背景、行动、结果",
-                  "follow_up": "", "confirmed_facts": ["候选人掌握量子计算"],
-                  "user_claims": [], "unconfirmed_suggestions": []}
+    def test_missing_answer_points_are_rejected(self):
+        output = {"evaluation": "回答有条理", "answer_points": ""}
         with patch("cvbuilder.interview_ai._call", return_value=output):
             with self.assertRaises(ai.ModelResponseError):
                 interview_ai.generate_feedback(self.session, self.resume)

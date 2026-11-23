@@ -65,7 +65,7 @@ class WebContractTests(unittest.TestCase):
             records = JobRecordStore(Path(folder))
             with patch.object(self.web, "job_store", records), patch.object(self.web.store, "load", return_value=confirmed), \
                  patch.object(interview_ai, "generate_question", return_value={"question": "虚构测试：请自我介绍", "category": "自我介绍", "reference_answer": "请据实介绍已确认经历。"}), \
-                 patch.object(interview_ai, "generate_feedback", return_value={"evaluation": "结构清晰", "suggestions": "补充背景", "answer_points": "背景、行动、结果", "follow_up": "请举例", "confirmed_facts": [], "user_claims": [], "unconfirmed_suggestions": []}):
+                 patch.object(interview_ai, "generate_feedback", return_value={"evaluation": "结构清晰", "answer_points": "背景、行动、结果"}):
                 company = records.add_company("虚构测试公司")
                 job = records.add_job(company["id"], "虚构测试职位", "旧版虚构要求")
                 version = records.create_version(company["id"], job["id"], {"summary": []}, [], {}, job_text="旧版虚构要求")
@@ -91,6 +91,7 @@ class WebContractTests(unittest.TestCase):
                 answered = client.post(f"/api/interviews/{session['id']}/answers", json={"answer": "虚构测试回答"})
                 self.assertEqual(answered.status_code, 200)
                 self.assertEqual(answered.json()["turns"][0]["feedback"]["evaluation"], "结构清晰")
+                self.assertIsNone(answered.json()["turns"][0]["follow_up"])
                 self.assertEqual(answered.json()["turns"][0]["reference_answer"], "虚构测试：据实介绍经历")
                 self.assertEqual(client.post(f"/api/interviews/{session['id']}/next").status_code, 200)
                 self.assertEqual(client.post(f"/api/interviews/{session['id']}/end").json()["status"], "ended")

@@ -68,14 +68,14 @@ async function run(action: Action) {
 </script>
 
 <template>
-  <section id="interview-panel" class="interview-panel" role="tabpanel">
+  <section id="interview-panel" class="interview-panel">
     <details v-if="session" id="interview-context">
       <summary>查看本场招聘要求</summary>
       <p id="interview-requirements">{{ session.job_text || '' }}</p>
     </details>
     <div id="interview-session">
       <p v-if="!jobSelected" class="hint">请先选择目标职位和简历版本。</p>
-      <p v-else-if="!session" class="hint">选择一个已保存版本，点击“用此版本开始面试”。</p>
+      <p v-else-if="!session" class="hint">选择一个已保存的简历版本后开始面试。</p>
       <template v-else>
         <div class="interview-toolbar">
           <strong>{{ session.job_title || '目标职位' }} · V{{ session.version_number }}{{ session.version_deleted ? '（关联版本已删除）' : '' }} · 第 {{ turns.length }} 题{{ session.status === 'ended' ? ' · 已结束' : '' }}</strong>
@@ -85,19 +85,14 @@ async function run(action: Action) {
           <h3>第 {{ index + 1 }} 题 · {{ turn.category || '面试问题' }}</h3>
           <p>{{ turn.question || '' }}</p>
           <details v-if="turn.reference_answer || turn.feedback?.reference_answer" class="reference-answer">
-            <summary>查看参考答案</summary>
+            <summary>参考回答要点</summary>
             <p>{{ turn.reference_answer || turn.feedback?.reference_answer }}</p>
           </details>
           <button v-else-if="!turn.answer && index === turns.length - 1 && session.status === 'awaiting_answer'" type="button" class="secondary" :disabled="busy" @click="run('reference')">为旧题生成参考答案</button>
           <div v-if="turn.answer" class="interview-answer"><strong>你的回答</strong><p>{{ turn.answer }}</p></div>
           <div v-if="turn.feedback" class="interview-feedback">
             <strong>评价</strong><p>{{ turn.feedback.evaluation || '' }}</p>
-            <strong>改进建议</strong><p>{{ turn.feedback.suggestions || '' }}</p>
             <strong>回答要点</strong><p>{{ turn.feedback.answer_points || '' }}</p>
-            <template v-if="turn.follow_up"><strong>追问</strong><p>{{ turn.follow_up }}</p></template>
-            <template v-if="turn.feedback.confirmed_facts?.length"><strong>已确认事实</strong><p>{{ turn.feedback.confirmed_facts.join('；') }}</p></template>
-            <template v-if="turn.feedback.user_claims?.length"><strong>用户自述</strong><p>{{ turn.feedback.user_claims.join('；') }}</p></template>
-            <template v-if="turn.feedback.unconfirmed_suggestions?.length"><strong>待确认建议</strong><p>{{ turn.feedback.unconfirmed_suggestions.join('；') }}</p></template>
           </div>
         </article>
         <form v-if="session.status === 'awaiting_answer'" id="answer-form" @submit.prevent="run('answer')">

@@ -9,8 +9,8 @@ from pathlib import Path
 
 from .mysql_storage import MySQLStore
 
-SCHEMA_VERSION = "001_initial_mysql"
-SCHEMA_FILE = Path(__file__).resolve().parents[1] / "migrations" / (SCHEMA_VERSION + ".sql")
+SCHEMA_FILES = tuple(sorted((Path(__file__).resolve().parents[1] / "migrations").glob("[0-9][0-9][0-9]_*.sql")))
+SCHEMA_VERSION = SCHEMA_FILES[-1].stem
 
 
 def _statements(source: str) -> list[str]:
@@ -23,16 +23,19 @@ def apply_schema() -> bool:
     connection = MySQLStore("schema-migration")._connect()
     try:
         with connection.cursor() as cursor:
-            statements = _statements(SCHEMA_FILE.read_text(encoding="utf-8"))
-            cursor.execute(statements[0])  # schema_migrations exists before version lookup
-            cursor.execute("SELECT version FROM schema_migrations WHERE version=%s", (SCHEMA_VERSION,))
-            if cursor.fetchone() is not None:
-                return False
-            for statement in statements[1:]:
-                cursor.execute(statement)
-            cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (SCHEMA_VERSION,))
-        connection.commit()
-        return True
+            cursor.execute(_statements(SCHEMA_FILES[0].read_text(encoding="utf-8"))[0])
+            applied = False
+            for file in SCHEMA_FILES:
+                cursor.execute("SELECT version FROM schema_migrations WHERE version=%s", (file.stem,))
+                if cursor.fetchone() is not None:
+                    continue
+                statements = _statements(file.read_text(encoding="utf-8"))
+                for statement in statements[1:] if file == SCHEMA_FILES[0] else statements:
+                    cursor.execute(statement)
+                cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (file.stem,))
+                connection.commit()
+                applied = True
+        return applied
     except BaseException:
         connection.rollback()
         raise

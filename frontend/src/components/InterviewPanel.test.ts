@@ -43,6 +43,7 @@ test('submits an answer only for the selected fictional session', async () => {
     id: 'fictional-session', job_title: '虚构测试岗位', version_number: 1,
     status: 'awaiting_answer', turns: [{ id: 'fictional-turn', question: '虚构测试问题', reference_answer: '虚构参考答案' }],
   });
+  expect(host.querySelector('.reference-answer summary')?.textContent).toBe('参考回答要点');
   expect(host.querySelector('.reference-answer')?.textContent).toContain('虚构参考答案');
   const textarea = host.querySelector<HTMLTextAreaElement>('#interview-answer');
   expect(textarea).not.toBeNull();
@@ -54,4 +55,24 @@ test('submits an answer only for the selected fictional session', async () => {
     method: 'POST', body: JSON.stringify({ answer: '虚构测试回答' }),
   }));
   await vi.waitFor(() => expect(onRefresh).toHaveBeenCalled());
+});
+
+test('shows only brief evaluation and answer points for fictional saved feedback', () => {
+  const { host } = mount({
+    id: 'fictional-session', job_title: '虚构测试岗位', version_number: 1,
+    status: 'feedback_ready', turns: [{
+      id: 'fictional-turn', question: '虚构测试问题', answer: '虚构测试回答',
+      follow_up: '旧追问', feedback: {
+        evaluation: '回答清楚。', answer_points: '背景、行动、结果。',
+        suggestions: '旧建议', confirmed_facts: ['旧事实'], user_claims: ['旧自述'],
+        unconfirmed_suggestions: ['旧待确认建议'],
+      },
+    }],
+  });
+  const text = host.querySelector('.interview-feedback')?.textContent || '';
+  expect(text).toContain('回答清楚。');
+  expect(text).toContain('背景、行动、结果。');
+  for (const omitted of ['旧追问', '旧建议', '旧事实', '旧自述', '旧待确认建议']) {
+    expect(host.textContent).not.toContain(omitted);
+  }
 });

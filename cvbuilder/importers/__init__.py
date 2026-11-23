@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 
@@ -58,7 +57,8 @@ def extract_text(path: Path) -> ExtractedText:
     elif suffix == ".pdf":
         text, fmt = _pdf_text(path), "pdf"
     elif suffix == ".doc":
-        executable = shutil.which("soffice") or shutil.which("libreoffice")
+        from ..templates import find_soffice
+        executable = find_soffice()
         if not executable:
             raise UnsupportedFormatError("读取旧版 DOC 需要安装 LibreOffice。")
         with tempfile.TemporaryDirectory(prefix="cvbuilder-import-") as folder:

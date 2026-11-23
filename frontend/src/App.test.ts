@@ -32,9 +32,46 @@ test('loads the Vue workspace and selects company, job and resume version', asyn
   await wrapper.find('.company-select').trigger('click');
   await wrapper.find('.job-select').trigger('click');
   await flushPromises();
-  await wrapper.find('.version-chip').trigger('click');
+  await wrapper.find('.version-bubble').trigger('click');
   expect(wrapper.find('#resume-document').text()).toContain('虚构经历');
   expect(wrapper.find('#export').attributes('disabled')).toBeUndefined();
+  wrapper.unmount();
+});
+
+test('starts an interview from a version selected in the interview tab', async () => {
+  window.cvAuth = { enabled: false, ready: Promise.resolve(), url: path => path, headers: () => ({}) };
+  const company = { id: 'fictional-company', name: '虚构公司', jobs: [{
+    id: 'fictional-job', title: '虚构岗位', job_text: '虚构招聘要求', has_generated: true,
+    versions: [{ ...fictionalVersion('fictional-v1'), number: 1 }, { ...fictionalVersion('fictional-v2'), number: 2 }],
+  }] };
+  let started = false;
+  const session = { id: 'fictional-session', job_title: '虚构岗位', version_number: 2, status: 'awaiting_answer', turns: [] };
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url === '/api/resume') return response(null);
+    if (url === '/api/templates') return response([]);
+    if (url === '/api/applications') return response({ companies: [company] });
+    if (url === '/api/interviews?job_id=fictional-job') return response(started ? [{ id: session.id }] : []);
+    if (url === '/api/interviews/fictional-session') return response(session);
+    if (url === '/api/jobs/fictional-job/versions/fictional-v2/interviews') {
+      started = true;
+      return response(session);
+    }
+    throw Error(`Unexpected test URL: ${url}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const wrapper = mount(App);
+  await flushPromises();
+  await wrapper.find('.company-select').trigger('click');
+  await wrapper.find('.job-select').trigger('click');
+  await wrapper.find('#tab-interview').trigger('click');
+  await flushPromises();
+  expect(wrapper.find('#start-interview-here').exists()).toBe(false);
+  await wrapper.findAll('.interview-version-buttons button')[1].trigger('click');
+  expect(wrapper.findAll('.interview-version-buttons button')[1].attributes('aria-pressed')).toBe('true');
+  await wrapper.find('#start-interview-here').trigger('click');
+  await flushPromises();
+  expect(fetchMock).toHaveBeenCalledWith('/api/jobs/fictional-job/versions/fictional-v2/interviews', expect.objectContaining({ method: 'POST' }));
+  expect(wrapper.find('#interview-session').text()).toContain('虚构岗位 · V2');
   wrapper.unmount();
 });
 
@@ -96,7 +133,7 @@ test('clears a selected fictional version removed by a refreshed application lis
   await flushPromises();
   await wrapper.find('.company-select').trigger('click');
   await wrapper.find('.job-select').trigger('click');
-  await wrapper.find('.version-chip').trigger('click');
+  await wrapper.find('.version-bubble').trigger('click');
   expect(wrapper.find('#resume-document').text()).toContain('虚构经历');
   await wrapper.find('[aria-label="修改虚构公司名称"]').trigger('click');
   await flushPromises();

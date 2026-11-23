@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 
@@ -49,4 +50,20 @@ class ImporterTests(unittest.TestCase):
             path = Path(folder) / "bad.docx"; path.write_text("not a document")
             with self.assertRaises(InvalidDocumentError):
                 extract_text(path)
+
+    def test_legacy_doc_uses_configured_libreoffice_location(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "fictional-test.doc"
+            path.write_bytes(b"fictional test document")
+
+            def convert(command, **_kwargs):
+                (Path(command[command.index("--outdir") + 1]) / "fictional-test.txt").write_text(
+                    "虚构测试招聘要求", encoding="utf-8")
+
+            with patch("cvbuilder.templates.find_soffice", return_value="/fictional/soffice") as locate, \
+                 patch("cvbuilder.importers.subprocess.run", side_effect=convert) as run:
+                result = extract_text(path)
+            locate.assert_called_once_with()
+            self.assertEqual(run.call_args.args[0][0], "/fictional/soffice")
+            self.assertEqual(result.text, "虚构测试招聘要求")
 

@@ -1,9 +1,9 @@
 # 本地 MySQL 运行说明
 
-本项目使用 MySQL 8.4 的独立数据库。首次运行前，在本机 MySQL 中创建一个空库和具有该库读写权限的专用账号；不要将密码写入仓库、命令行历史或测试输出。建表脚本可重复执行：
+本项目使用 MySQL 8.4 的独立数据库。首次运行前，在本机 MySQL 中创建一个空库和具有该库读写权限的专用账号；不要将密码写入仓库、命令行历史或测试输出。设置下表中的连接环境变量后，按编号应用尚未执行的迁移（可重复运行）：
 
 ```sh
-mysql --database=cvbuilder < migrations/001_initial_mysql.sql
+.venv/bin/python -m cvbuilder.mysql_migrate
 ```
 
 本地网页进程从以下环境变量读取连接信息：

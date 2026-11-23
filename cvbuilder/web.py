@@ -394,7 +394,7 @@ async def answer_interview(session_id: str, payload: dict[str, Any]):
         raise HTTPException(409, detail={"code": "resume_required", "message": "基础简历已删除，回答已保存。"})
     try:
         feedback = generate_feedback(session, resume)
-        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": feedback.get("follow_up")}
+        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": None}
         return job_store.update_interview(session_id, {"turns": turns, "status": "feedback_ready", "error": None}, expected_status="feedback_pending")
     except Exception as exc:
         logger.error("Interview feedback failed type=%s", type(exc).__name__)
@@ -427,7 +427,7 @@ async def answer_interview_retry(session_id: str, session: dict[str, Any]):
             raise ValueError("基础简历不存在")
         feedback = generate_feedback(session, resume)
         turns = session["turns"]
-        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": feedback.get("follow_up")}
+        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": None}
         return job_store.update_interview(session_id, {"turns": turns, "status": "feedback_ready", "error": None}, expected_status="feedback_pending")
     except Exception as exc:
         logger.error("Interview feedback retry failed type=%s", type(exc).__name__)
