@@ -72,6 +72,7 @@ export interface InterviewSession {
   id: string;
   job_title?: string;
   job_text?: string;
+  version_id?: string;
   version_number?: number;
   version_deleted?: boolean;
   status: 'new' | 'question_pending' | 'reference_pending' | 'awaiting_answer' | 'feedback_pending' | 'feedback_ready' | 'failed' | 'ended';

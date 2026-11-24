@@ -213,47 +213,47 @@ async function reset() {
 
 <template>
   <section class="card base-card">
-    <details>
-      <summary><strong>基础简历</strong><span id="resume-state" class="hint">{{ status }}</span></summary>
-      <div class="row">
-        <label v-if="editing" id="upload-control" class="button secondary">导入 DOCX / DOC / PDF
-          <input id="upload" type="file" accept=".docx,.doc,.pdf" :disabled="uploading" @change="upload">
-        </label>
-        <button v-if="editing && !draftId" id="save" type="button" @click="save">保存基础简历</button>
-        <button v-if="!editing && base" id="edit" type="button" @click="editing = true">编辑基础简历</button>
-        <button id="delete" class="danger" type="button" @click="deleteBase">删除基础简历</button>
-        <button id="reset" class="danger secondary" type="button" @click="reset">重置全部数据</button>
-      </div>
-      <div v-if="uploading" id="base-progress" class="progress-status" role="status" aria-live="polite">
-        <span>正在上传文件、提取文字并整理基础简历…</span><progress aria-label="正在解析基础简历" />
-      </div>
-      <form id="resume-form" @submit.prevent="draftId ? confirmImport() : save()">
-        <label v-for="[key, label] in personalFields" :key="key">{{ label }}{{ ['name', 'email', 'phone'].includes(key) ? ' *' : '' }}
-          <input :data-key="key" :required="['name', 'email', 'phone'].includes(key)" :readonly="!editing"
-            :value="form.personal?.[key] || ''" @input="updatePersonal(key, $event)">
-        </label>
-        <div v-for="[section, title] in sections" :key="section" class="full">
-          <h3>{{ title }}</h3>
-          <div v-for="(item, index) in form[section]" :key="item.id || index" class="item-editor">
-            <div class="item-fields">
-              <label v-for="[key, label] in fields[section]" :key="key">{{ label }}
-                <textarea v-if="arrayFields.has(`${section}.${key}`)" rows="2" :data-item="section"
-                  :data-index="index" :data-field="key" :readonly="!editing"
-                  :value="itemValue(item, section, key)" @input="updateItem(section, index, key, $event)" />
-                <input v-else :data-item="section" :data-index="index" :data-field="key" :readonly="!editing"
-                  :value="itemValue(item, section, key)" @input="updateItem(section, index, key, $event)">
-              </label>
-            </div>
-            <button v-if="editing" type="button" class="remove" :data-section="section" :data-index="index"
-              @click="removeItem(section, index)">移除</button>
+    <div class="row">
+      <label v-if="editing" id="upload-control" class="button secondary">导入 DOCX / DOC / PDF
+        <input id="upload" type="file" accept=".docx,.doc,.pdf" :disabled="uploading" @change="upload">
+      </label>
+      <button v-if="editing && !draftId" id="save" type="button" @click="save">保存基础简历</button>
+      <button v-if="!editing && base" id="edit" type="button" @click="editing = true">编辑基础简历</button>
+      <button id="delete" class="danger" type="button" @click="deleteBase">删除基础简历</button>
+      <button id="reset" class="danger secondary" type="button" @click="reset">重置全部数据</button>
+      <span id="resume-state" class="hint" role="status">{{ status }}</span>
+    </div>
+    <div v-if="uploading" id="base-progress" class="progress-status" role="status" aria-live="polite">
+      <span>正在上传文件、提取文字并整理基础简历…</span><progress aria-label="正在解析基础简历" />
+    </div>
+    <form id="resume-form" @submit.prevent="draftId ? confirmImport() : save()">
+      <label v-for="[key, label] in personalFields" :key="key">{{ label }}{{ ['name', 'email', 'phone'].includes(key) ? ' *' : '' }}
+        <input :data-key="key" :required="['name', 'email', 'phone'].includes(key)" :readonly="!editing"
+          :value="form.personal?.[key] || ''" @input="updatePersonal(key, $event)">
+      </label>
+      <div v-for="[section, title] in sections" :key="section" class="full">
+        <h3>{{ title }}</h3>
+        <div v-for="(item, index) in form[section]" :key="item.id || index" class="item-editor">
+          <div class="item-fields">
+            <label v-for="[key, label] in fields[section]" :key="key"
+              :class="{ 'resume-long-field': key === 'achievements' || key === 'details' || (key === 'description') }">
+              {{ label }}{{ required[section].includes(key) ? ' *' : '' }}
+              <textarea v-if="arrayFields.has(`${section}.${key}`) || (key === 'description')" rows="2" :data-item="section"
+                :data-index="index" :data-field="key" :required="required[section].includes(key)" :readonly="!editing"
+                :value="itemValue(item, section, key)" @input="updateItem(section, index, key, $event)" />
+              <input v-else :data-item="section" :data-index="index" :data-field="key" :required="required[section].includes(key)" :readonly="!editing"
+                :value="itemValue(item, section, key)" @input="updateItem(section, index, key, $event)">
+            </label>
           </div>
-          <button v-if="editing" type="button" class="add" :data-section="section" @click="addItem(section)">添加{{ title }}</button>
+          <button v-if="editing" type="button" class="remove" :data-section="section" :data-index="index"
+            @click="removeItem(section, index)">移除</button>
         </div>
-      </form>
-      <div v-if="draftId" id="draft-area">
-        <div class="notice">已提取为待确认草稿，请逐项检查。</div>
-        <button id="confirm" type="button" @click="confirmImport">检查后确认保存</button>
+        <button v-if="editing" type="button" class="add" :data-section="section" @click="addItem(section)">添加{{ title }}</button>
       </div>
-    </details>
+    </form>
+    <div v-if="draftId" id="draft-area">
+      <div class="notice">已提取为待确认草稿，请逐项检查。</div>
+      <button id="confirm" type="button" @click="confirmImport">检查后确认保存</button>
+    </div>
   </section>
 </template>

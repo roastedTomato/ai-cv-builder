@@ -242,7 +242,23 @@ def structure_resume(text: str, personal: dict[str, str]) -> dict[str, Any]:
     """Turn locally extracted document text into an explicitly unconfirmed draft."""
     return _request(
         "base_resume", "base-resume.schema.json",
-        "将简历原文整理到基础简历 JSON。只填写原文明确支持的信息；无法确定的字段置空或空数组。不得新增经历、技能、证书或数字。技能只从明确标为技能或技术栈的栏目提取，不从工作、项目或自我评价推断，重复技能只保留一次。为经历生成稳定且互不重复的虚构格式 ID。",
+        (
+            "将简历原文整理到基础简历 JSON。只填写原文明确支持的信息；无法确定的字段置空或空数组。"
+            "不得新增经历、技能、证书或数字。为经历生成稳定且互不重复的虚构格式 ID。"
+            "逐条识别教育经历。每条 education 的 school 填学校名称，degree 填原文明确写出的学历层次；"
+            "原文只写学位时可保留其学位原词，不自行换算。major 只填专业或明确写出的主修方向，"
+            "不把学院名称、学历、课程或研究课题当作专业。即使学校、专业、学历和时间写在同一行，也要分别提取。"
+            "无法判断学历或专业时，将对应字段置空，不从学校、课程或就读年限推断。"
+            "虚构示例：“星河大学｜信息管理与信息系统（本科）｜2020.09–2024.06”，"
+            "则 school 为“星河大学”，degree 为“本科”，major 为“信息管理与信息系统”。"
+            "逐段识别工作经历。每条 work 的 employer 填公司或机构名，title 填原文中的职位名称，"
+            "description 只填工作职责或日常工作内容，achievements 填原文明示的成果。"
+            "职位名称可能单独一行，也可能与公司、部门和任职时间并排出现；有明确职位时原样填入 title，"
+            "不要把职位名称混入 description。找不到明确职位时将 title 置空，不从职责推测职位。"
+            "虚构示例：“星河科技｜初级数据分析师｜2023.06–2024.08”后接“负责维护销售报表”，"
+            "则 employer 为“星河科技”，title 为“初级数据分析师”，description 为“负责维护销售报表”。"
+            "技能只从明确标为技能或技术栈的栏目提取，不从工作、项目或自我评价推断，重复技能只保留一次。"
+        ),
         {"resume_id": "resume-local", "version": "1", "personal": personal, "resume_text": text},
     )
 

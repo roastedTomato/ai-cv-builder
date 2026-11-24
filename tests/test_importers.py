@@ -32,6 +32,37 @@ class ImporterTests(unittest.TestCase):
             self.assertEqual(result.format, "docx")
             self.assertIn("虚构测试数据", result.text)
 
+    def test_keeps_docx_table_rows_under_their_original_headings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "fictional-test.docx"
+            doc = Document()
+            doc.add_paragraph("教育经历")
+            table = doc.add_table(rows=0, cols=3)
+            for values in (
+                ("学校", "学历", "专业"),
+                ("虚构星河大学", "本科", "信息管理"),
+            ):
+                for cell, value in zip(table.add_row().cells, values):
+                    cell.text = value
+            doc.add_paragraph("工作经历")
+            cells = doc.add_table(rows=1, cols=2).rows[0].cells
+            cells[0].text = "公司：虚构星河科技"
+            cells[1].text = "职位：数据分析师"
+            doc.add_paragraph("技能")
+            doc.add_paragraph("Python")
+            doc.save(path)
+            self.assertEqual(
+                extract_text(path).text,
+                "教育经历\n学校\t学历\t专业\n虚构星河大学\t本科\t信息管理\n"
+                "工作经历\n公司：虚构星河科技\t职位：数据分析师\n技能\nPython",
+            )
+
+    def test_explicit_skills_keep_numbered_names_and_stop_at_inline_next_section(self):
+        text = "专业技能：\n1. Python / SQL\n3D 建模、CI/CD\n工作经历：使用 Tableau\nExcel\n技术栈：Git"
+        draft = {"skills": [{"name": name} for name in ("Python", "SQL", "3D 建模", "CI/CD", "Excel", "Git")]}
+        keep_explicit_skills(draft, text)
+        self.assertEqual([item["name"] for item in draft["skills"]], ["Python", "SQL", "3D 建模", "CI/CD", "Git"])
+
     def test_scanned_or_empty_pdf_has_actionable_error(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "empty.pdf"

@@ -37,6 +37,38 @@ const savingVersion = ref(false);
 const saveFeedback = ref<{ text: string; error: boolean } | null>(null);
 const visual = ref<VisualSettings>({ ...visualDefaults });
 const activeTab = ref<'versions' | 'interview'>('versions');
+const baseResumePage = ref(window.location.hash === '#base-resume');
+
+function updatePage() {
+  baseResumePage.value = window.location.hash === '#base-resume';
+}
+
+onMounted(() => window.addEventListener('hashchange', updatePage));
+onUnmounted(() => window.removeEventListener('hashchange', updatePage));
+
+const appearanceOpen = ref(false);
+const navigationMin = 180;
+const navigationMax = 340;
+const navigationWidth = ref(200);
+let resizeStartX = 0;
+let resizeStartWidth = 0;
+
+function setNavigationWidth(width: number) {
+  navigationWidth.value = Math.max(navigationMin, Math.min(navigationMax, width));
+}
+
+function startNavigationResize(event: PointerEvent) {
+  if (event.button !== 0 || !event.isPrimary) return;
+  resizeStartX = event.clientX;
+  resizeStartWidth = navigationWidth.value;
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+}
+
+function moveNavigationResize(event: PointerEvent) {
+  if (!(event.currentTarget as HTMLElement).hasPointerCapture(event.pointerId)) return;
+  setNavigationWidth(resizeStartWidth + event.clientX - resizeStartX);
+}
+
 const currentInterview = ref<InterviewSession | null>(null);
 const companyFormOpen = ref(false);
 const companyName = ref('');
@@ -44,6 +76,7 @@ const jobFormOpen = ref(false);
 const jobTitle = ref('');
 const jobText = ref('');
 const jobEditing = ref(false);
+const jobDetailsOpen = ref(false);
 const editJobTitle = ref('');
 const editJobText = ref('');
 const uploadState = ref('');
@@ -56,6 +89,10 @@ const selectedCompany = computed(() => companies.value.find(item => item.id === 
 const selectedJob = computed(() => selectedCompany.value?.jobs?.find(item => item.id === selectedJobId.value) || null);
 const storedVersion = computed(() => selectedJob.value?.versions?.find(item => item.id === selectedVersionId.value) || null);
 const currentVersion = computed(() => draft.value || storedVersion.value);
+const interviewStartVersion = computed(() => storedVersion.value || selectedJob.value?.versions?.find(
+  version => version.id === currentInterview.value?.version_id,
+));
+const showAppearance = computed(() => appearanceOpen.value && currentVersion.value && activeTab.value === 'versions');
 const dirty = computed(() => editing.value && draft.value !== null && snapshot(draft.value) !== savedSnapshot.value);
 const hasGenerated = computed(() => Boolean(selectedJob.value?.has_generated || selectedJob.value?.versions?.length));
 const currentMeta = computed(() => selectedJob.value
@@ -149,7 +186,6 @@ onMounted(async () => {
           const loaded = await api<InterviewSession>(`/api/interviews/${encodeURIComponent(interview.id)}`);
           if (selectionMatches(epoch, jobId) && request === interviewRequest) {
             currentInterview.value = loaded;
-            if (saved) activeTab.value = 'interview';
           }
         }
       }
@@ -195,9 +231,13 @@ async function saveVersion(asNew: boolean): Promise<boolean> {
     draft.value = next;
     editing.value = false;
     savedSnapshot.value = snapshot(next);
-    const message = asNew ? `已另存为 V${next.number}，原版本保留。` : `V${next.number} 已保存。`;
-    saveFeedback.value = { text: message, error: false };
-    notify(message);
+    if (asNew) {
+      const message = `已另存为 V${next.number}，原版本保留。`;
+      saveFeedback.value = { text: message, error: false };
+      notify(message);
+    } else {
+      saveFeedback.value = null;
+    }
     return true;
   } catch (error) {
     const message = errorMessage(error);
@@ -218,6 +258,7 @@ async function beforeSwitch(): Promise<boolean> {
 }
 
 function clearSelection() {
+  jobDetailsOpen.value = false;
   saveFeedback.value = null;
   selectionEpoch += 1;
   selectedJobId.value = null;
@@ -250,6 +291,7 @@ async function selectJob(company: Company, job: Job, version?: Version) {
   invalidateInterview();
   sessionStorage.setItem('cv-selected-job', job.id);
   if (version) showVersion(version);
+  else jobDetailsOpen.value = true;
   await run(async () => { await refreshInterviews(job.id); });
 }
 
@@ -259,6 +301,8 @@ async function selectVersion(version: Version) {
 }
 
 function showVersion(version: Version) {
+  jobDetailsOpen.value = false;
+  appearanceOpen.value = false;
   const next = normalizeVersion(version);
   selectionEpoch += 1;
   saveFeedback.value = null;
@@ -281,6 +325,7 @@ async function openDraft() {
   savedSnapshot.value = snapshot(draft.value);
   activeTab.value = 'versions';
   editing.value = true;
+  appearanceOpen.value = true;
 }
 
 async function createCompany() {
@@ -364,6 +409,7 @@ async function editJob(company: Company, job: Job) {
   selectedVersionId.value = null; draft.value = null; editing.value = false;
   invalidateInterview();
   sessionStorage.setItem('cv-selected-job', job.id);
+  jobDetailsOpen.value = true;
   jobEditing.value = true; editJobTitle.value = job.title; editJobText.value = job.job_text || '';
 }
 
@@ -462,6 +508,7 @@ function moveModule(key: string, direction: -1 | 1) {
 }
 
 function cancelVersion() {
+  appearanceOpen.value = false;
   const restored = storedVersion.value ? normalizeVersion(storedVersion.value) : null;
   saveFeedback.value = null;
   draft.value = restored;
@@ -509,24 +556,30 @@ async function startInterview() {
     if (!selectionMatches(epoch, jobId, versionId) || request !== interviewRequest) return;
     if (existing && !confirm('开始新面试会删除该职位之前保存的面试记录，确定继续吗？')) return;
     busy.value = 'interview';
+    activeTab.value = 'interview';
     try {
       const url = `/api/jobs/${encodeURIComponent(jobId)}/versions/${encodeURIComponent(versionId)}/interviews`;
       if (cloud) {
         const queued = await api<unknown>(url, json('POST', {}));
         if (!selectionMatches(epoch, jobId, versionId)) return;
-        activeTab.value = 'interview';
         const session = await api<InterviewSession>(`/api/interviews/${encodeURIComponent(stringField(queued, 'session_id'))}`);
         if (selectionMatches(epoch, jobId, versionId)) currentInterview.value = session;
         await waitTask(queuedTask(queued).task_id, objectResult);
       } else {
         const session = await api<InterviewSession>(url, json('POST', {}));
         if (!selectionMatches(epoch, jobId, versionId)) return;
-        activeTab.value = 'interview';
         currentInterview.value = session;
       }
       if (selectionMatches(epoch, jobId, versionId)) await refreshInterviews(jobId);
     } finally { busy.value = null; }
   });
+}
+
+async function restartInterview() {
+  const version = interviewStartVersion.value;
+  if (!version || busy.value || editing.value) return;
+  if (selectedVersionId.value !== version.id) showVersion(version);
+  await startInterview();
 }
 
 function resetWorkspace() {
@@ -538,15 +591,22 @@ async function refreshInterviewView() { await refreshInterviews(); }
 
 <template>
   <header class="atelier-header">
-    <div class="atelier-title"><h1>简历工作台</h1><span aria-hidden="true">／</span></div>
-    <div class="atelier-status"><span class="local">本地工作台</span><button id="auth-logout" type="button" :hidden="!cloud">退出登录</button></div>
+    <div class="atelier-title">
+      <h1>{{ baseResumePage ? '基础简历' : '简历工作台' }}</h1>
+      <a class="base-resume-link" :href="baseResumePage ? '#workspace' : '#base-resume'">
+        <span>{{ baseResumePage ? '返回工作台' : '基础简历' }}</span>
+        <span class="base-resume-arrow" aria-hidden="true">{{ baseResumePage ? '←' : '↗' }}</span>
+      </a>
+    </div>
+    <div class="atelier-status">
+      <span class="local">本地工作台</span><button id="auth-logout" type="button" :hidden="!cloud">退出登录</button></div>
   </header>
 
-  <BaseResume :base="base" :on-base-change="onBaseChange" :api="api" :cloud="cloud"
+  <BaseResume v-show="baseResumePage" :base="base" :on-base-change="onBaseChange" :api="api" :cloud="cloud"
     :wait-task="waitTask" :notify="notify" :before-reset="beforeSwitch" :on-reset="async () => resetWorkspace()" />
 
-  <div class="workspace" :class="{ 'interview-mode': activeTab === 'interview' }">
-    <aside class="card navigation">
+  <div v-show="!baseResumePage" class="workspace" :style="{ '--navigation-width': navigationWidth + 'px' }" :class="{ 'wide-preview': !showAppearance }">
+    <aside id="application-navigation" class="card navigation">
       <div class="section-heading"><div><p class="panel-kicker">公司 · 职位 · 版本</p><h2>投递图谱</h2></div><button id="add-company" class="secondary small" type="button" @click="companyFormOpen = !companyFormOpen">＋ 公司</button></div>
       <form v-if="companyFormOpen" id="company-form" class="compact-form" @submit.prevent="createCompany">
         <input id="company-name" v-model="companyName" placeholder="公司名称" aria-label="公司名称" required />
@@ -566,38 +626,50 @@ async function refreshInterviewView() { await refreshInterviews(); }
           <button id="cancel-job" class="secondary" type="button" @click="jobFormOpen = false; jobTitle = ''; jobText = ''; uploadState = ''">取消</button>
         </form>
       </div>
+      <div class="navigation-resize" role="separator" tabindex="0" aria-orientation="vertical"
+        aria-label="调整投递图谱宽度" aria-controls="application-navigation"
+        :aria-valuemin="navigationMin" :aria-valuemax="navigationMax" :aria-valuenow="navigationWidth"
+        @pointerdown="startNavigationResize" @pointermove="moveNavigationResize"
+        @keydown.left.prevent="setNavigationWidth(navigationWidth - 10)"
+        @keydown.right.prevent="setNavigationWidth(navigationWidth + 10)"
+        @keydown.home.prevent="setNavigationWidth(navigationMin)"
+        @keydown.end.prevent="setNavigationWidth(navigationMax)" />
     </aside>
 
     <section class="resume-column">
-      <div class="section-heading"><div>
+      <div class="section-heading"><div class="current-heading">
         <h2 id="current-title">{{ selectedJob ? `${selectedCompany?.name || ''} · ${selectedJob.title}` : '选择一个岗位' }}</h2>
-        <p id="current-meta" class="hint">{{ currentMeta }}</p>
+        <p id="current-meta" class="hint" :class="{ 'current-version-label': currentVersion }">{{ currentMeta }}</p>
+        <p v-if="saveFeedback" id="resume-save-status" class="hint" :class="{ error: saveFeedback.error }"
+          role="status">{{ saveFeedback.text }}</p>
       </div><div class="row tight">
-        <button id="create-version" type="button" :disabled="!selectedJob || editing || hasGenerated || !!busy" @click="createVersion">{{ hasGenerated ? 'V1 已生成' : '确认生成简历' }}</button>
-        <button v-if="currentVersion && !editing" id="edit-version" class="secondary" type="button" @click="draft = normalizeVersion(currentVersion); editing = true; saveFeedback = null">编辑</button>
+        <button v-if="!hasGenerated" id="create-version" type="button" :disabled="!selectedJob || editing || !!busy" @click="createVersion">确认生成简历</button>
+        <button v-if="currentVersion && !editing" id="edit-version" class="secondary" type="button" @click="draft = normalizeVersion(currentVersion); editing = true; appearanceOpen = true; saveFeedback = null">编辑</button>
         <button v-if="selectedJob?.resume_draft && activeTab === 'versions' && !editing" id="open-resume-draft"
           class="secondary" type="button" @click="openDraft">打开已有草稿</button>
         <template v-if="editing"><button id="save-current-version" type="button" :disabled="savingVersion" @click="saveVersion(false)">保存</button>
           <button id="save-version" class="secondary" type="button" :disabled="savingVersion" @click="saveVersion(true)">另存为新版本</button>
           <button id="cancel-version" class="secondary" type="button" :disabled="savingVersion" @click="cancelVersion">取消</button></template>
       </div></div>
-      <p v-if="saveFeedback" id="resume-save-status" class="hint" :class="{ error: saveFeedback.error }"
-        role="status">{{ saveFeedback.text }}</p>
-      <section v-if="selectedJob && activeTab !== 'interview'" id="job-details" class="job-details">
-        <div class="section-heading"><h3>目标职位与招聘要求</h3>
-          <button v-if="!jobEditing" id="edit-job" class="secondary small" type="button"
-            @click="editJobTitle = selectedJob.title; editJobText = selectedJob.job_text || ''; jobEditing = true">修改职位</button>
+      <details v-if="selectedJob && activeTab !== 'interview'" :key="selectedJob.id" :open="jobDetailsOpen"
+        id="job-details" class="job-details" @toggle="jobDetailsOpen = ($event.currentTarget as HTMLDetailsElement).open">
+        <summary><span>目标职位与招聘要求</span><span aria-hidden="true">⌄</span></summary>
+        <div class="job-details-content">
+          <div v-if="!jobEditing" class="section-heading">
+            <button id="edit-job" class="secondary small" type="button"
+              @click="editJobTitle = selectedJob.title; editJobText = selectedJob.job_text || ''; jobEditing = true">修改职位</button>
+          </div>
+          <p v-if="!jobEditing" id="job-requirements" class="requirements-text">{{ selectedJob.job_text || '' }}</p>
+          <form v-else id="job-edit-form" @submit.prevent="saveJob">
+            <label>职位名称<input id="job-edit-title" v-model="editJobTitle" required /></label>
+            <label>招聘要求<textarea id="job-edit-text" v-model="editJobText" rows="14" required /></label>
+            <label class="button secondary">上传 DOCX / DOC / PDF<input id="job-edit-upload" type="file" accept=".docx,.doc,.pdf" @change="uploadJob($event, true)" /></label>
+            <p id="job-edit-upload-state" class="hint" role="status">{{ editUploadState }}</p>
+            <div class="row"><button type="submit">检查后保存修改</button>
+              <button id="cancel-job-edit" class="secondary" type="button" @click="jobEditing = false; editUploadState = ''">取消</button></div>
+          </form>
         </div>
-        <p v-if="!jobEditing" id="job-requirements" class="requirements-text">{{ selectedJob.job_text || '' }}</p>
-        <form v-else id="job-edit-form" @submit.prevent="saveJob">
-          <label>职位名称<input id="job-edit-title" v-model="editJobTitle" required /></label>
-          <label>招聘要求<textarea id="job-edit-text" v-model="editJobText" rows="14" required /></label>
-          <label class="button secondary">上传 DOCX / DOC / PDF<input id="job-edit-upload" type="file" accept=".docx,.doc,.pdf" @change="uploadJob($event, true)" /></label>
-          <p id="job-edit-upload-state" class="hint" role="status">{{ editUploadState }}</p>
-          <div class="row"><button type="submit">检查后保存修改</button>
-            <button id="cancel-job-edit" class="secondary" type="button" @click="jobEditing = false; editUploadState = ''">取消</button></div>
-        </form>
-      </section>
+      </details>
 
       <div class="workspace-tabs" role="tablist" aria-label="工作区">
         <button id="tab-versions" type="button" role="tab" :aria-selected="activeTab === 'versions'" @click="activeTab = 'versions'">简历版本</button>
@@ -612,26 +684,46 @@ async function refreshInterviewView() { await refreshInterviews(); }
         </div>
         <ResumePreview :job="selectedJob" :version="currentVersion" :editing="editing" :visual="visual" :inert="savingVersion || undefined"
           :on-field="updateField" :on-move="moveModule" />
-        <section v-if="currentVersion" class="version-requirements">
-          <h3>V{{ currentVersion.number }} 使用的招聘要求</h3>
-          <p class="requirements-text">{{ currentVersion.job_text || '' }}</p>
-        </section>
-        <button v-if="currentVersion && !editing" id="start-interview" type="button" :disabled="!!busy" @click="startInterview">用此版本开始面试</button>
+        <details v-if="currentVersion" :key="currentVersion.id" id="version-requirements" class="job-details">
+          <summary><span>V{{ currentVersion.number }} 使用的招聘要求</span><span aria-hidden="true">⌄</span></summary>
+          <div class="job-details-content">
+            <p class="requirements-text">{{ currentVersion.job_text || '此版本没有保存招聘要求。' }}</p>
+          </div>
+        </details>
+        <div v-if="currentVersion && !editing" class="preview-actions" role="group" aria-label="简历操作">
+          <div class="export-buttons preview-exports" role="group" aria-label="导出简历">
+            <button id="export-pdf" type="button" :disabled="!!busy" @click="exportResume('pdf')">导出 PDF</button>
+            <button id="export" class="secondary" type="button" :disabled="!!busy" @click="exportResume('docx')">导出 Word</button>
+          </div>
+          <button id="start-interview" type="button" :disabled="!!busy" @click="startInterview">
+            <span class="interview-action-icon" aria-hidden="true"></span>用此版本开始面试
+          </button>
+        </div>
       </section>
       <template v-else>
         <section id="interview-workspace" role="tabpanel">
-          <div v-if="selectedVersionId && !editing" class="interview-version-picker">
-            <button id="start-interview-here" type="button" :disabled="!!busy"
-              @click="startInterview">{{ currentInterview ? '用 V' + currentVersion?.number + ' 开始新面试' : '用 V' + currentVersion?.number + ' 开始面试' }}</button>
+          <div v-if="busy === 'interview'" class="progress-status" role="status" aria-live="polite">
+            <span>正在根据此版本生成面试题和参考回答要点，请稍候…</span>
+            <progress aria-label="正在准备模拟面试" />
           </div>
-          <InterviewPanel :job-selected="!!selectedJob" :session="currentInterview" :api="api" :cloud="cloud"
+          <div v-else-if="interviewStartVersion && !editing" class="interview-version-picker">
+            <button id="start-interview-here" type="button" :disabled="!!busy"
+              @click="restartInterview">用 V{{ interviewStartVersion.number }} {{ currentInterview ? '开始新面试' : '开始面试' }}</button>
+          </div>
+          <InterviewPanel v-show="busy !== 'interview'" :job-selected="!!selectedJob" :session="currentInterview" :api="api" :cloud="cloud"
             :wait-task="waitTask" :notify="notify" :on-refresh="refreshInterviewView" />
         </section>
       </template>
     </section>
 
-    <aside class="card appearance" :inert="savingVersion || undefined">
-      <div class="appearance-title"><p class="panel-kicker">模板 · 配色 · 导出</p><h2>风格工坊</h2></div>
+    <aside v-if="showAppearance" class="card appearance" :inert="savingVersion || undefined">
+      <div class="appearance-title section-heading">
+        <div><p class="panel-kicker">模板 · 配色 · 排版</p><h2>风格工坊</h2></div>
+        <button class="secondary small appearance-collapse" type="button" aria-label="收起风格工坊"
+          title="收起风格工坊" @click="appearanceOpen = false">
+          <span aria-hidden="true"></span><span aria-hidden="true"></span>
+        </button>
+      </div>
       <section class="appearance-section"><h3>简历模板</h3><div id="template-cards" class="template-cards" role="group" aria-label="简历模板">
         <button v-for="item in templates" :key="item.id" class="template-card" :class="{ selected: visual.template_id === item.id }"
           type="button" :aria-pressed="visual.template_id === item.id" :disabled="!currentVersion" @click="updateVisual('template_id', item.id)">
@@ -648,10 +740,6 @@ async function refreshInterviewView() { await refreshInterviews(); }
       <section class="appearance-section"><h3>排版细节</h3><div id="width-options" class="width-options" role="group" aria-label="页面宽度">
         <button v-for="item in widths" :key="item.value" type="button" :class="{ selected: visual.page_width === item.value }"
           :aria-pressed="visual.page_width === item.value" :title="item.width" :aria-label="`${item.name}（${item.width}）`" :disabled="!currentVersion" @click="updateVisual('page_width', item.value)">{{ item.name }}</button>
-      </div></section>
-      <section class="appearance-section export-section"><h3 class="visually-hidden">导出简历</h3><div class="export-buttons">
-        <button id="export-pdf" type="button" :disabled="!currentVersion || editing || !!busy" @click="exportResume('pdf')">导出 PDF</button>
-        <button id="export" class="secondary" type="button" :disabled="!currentVersion || editing || !!busy" @click="exportResume('docx')">导出 Word</button>
       </div></section>
     </aside>
   </div>

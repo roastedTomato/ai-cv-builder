@@ -47,15 +47,15 @@ cvbuilder demo --output-dir sample_exports
 
 ## 模板
 
-`cv_templates/` 中的两份源模板保留原样。`templates/` 中的三份实验模板使用 [统一占位符规范](docs/word-template-spec.md)，由本项目生成。支持短内容、重复模块、空模块和自然分页；不承诺兼容任意 DOCX。
+`templates/` 中的模板使用 [统一占位符规范](docs/word-template-spec.md)。网页提供经典单栏、现代单栏、侧栏双栏和创意版四款模板（`template-04` 至 `template-07`），历史版本仍可使用原模板导出。第一阶段 CLI 演示使用 `template-01` 至 `template-03`。
 
 ## 测试与人工检查
 
 ```sh
 python -m unittest discover -s tests -v
-python scripts/create_render_samples.py
+python scripts/create_render_samples.py --output-dir "$(mktemp -d)"
 ```
 
-渲染样例写入 `sample_exports/`，包含短、长和空模块分别填入三个模板的 DOCX/PDF。人工验收需打开生成的 PDF 或转成页面图，检查中文字体、换行、分页、重叠、截断和意外空白页。
+脚本为四款网页模板和三款历史模板分别生成短内容、长内容和空模块的 DOCX/PDF 样例，并输出文件路径。人工验收需打开生成的 PDF 或转成页面图，检查中文字体、换行、分页、重叠、截断和意外空白页，并检查导出文件是否残留占位符。
 
 所有 fixture 均为虚构测试数据，见 [fixtures/README.md](fixtures/README.md)。

@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 from docx import Document
+from docx.text.paragraph import Paragraph
 
 
 class ImportErrorBase(ValueError):
@@ -49,8 +50,13 @@ def extract_text(path: Path) -> ExtractedText:
     if suffix == ".docx":
         try:
             doc = Document(path)
-            text = "\n".join(p.text for p in doc.paragraphs)
-            text += "\n" + "\n".join("\t".join(c.text for c in row.cells) for table in doc.tables for row in table.rows)
+            blocks = []
+            for block in doc.iter_inner_content():
+                if isinstance(block, Paragraph):
+                    blocks.append(block.text)
+                else:
+                    blocks.extend("\t".join(cell.text for cell in row.cells) for row in block.rows)
+            text = "\n".join(blocks)
         except Exception as exc:
             raise InvalidDocumentError("DOCX 文件无法读取，请检查文件是否损坏。") from exc
         fmt = "docx"

@@ -16,8 +16,8 @@ const fictionalVersion = (id: string) => ({
 test('loads the Vue workspace and selects company, job and resume version', async () => {
   window.cvAuth = { enabled: false, ready: Promise.resolve(), url: path => path, headers: () => ({}) };
   const company = { id: 'fictional-company', name: '虚构公司', jobs: [{
-    id: 'fictional-job', title: '虚构岗位', job_text: '虚构招聘要求', has_generated: true,
-    versions: [{ id: 'fictional-version', number: 1,
+    id: 'fictional-job', title: '虚构岗位', job_text: '虚构当前招聘要求', has_generated: true,
+    versions: [{ id: 'fictional-version', number: 1, job_text: '虚构历史招聘要求\n第二行',
       resume_content: { personal: { name: '虚构姓名' }, summary: [{ text: '虚构经历' }] },
       module_order: ['summary'], visual_settings: { template_id: 'template-01', color: '#2C5263', page_width: 'standard' } }],
   }] };
@@ -29,11 +29,23 @@ test('loads the Vue workspace and selects company, job and resume version', asyn
   const wrapper = mount(App);
   await flushPromises();
   expect(wrapper.text()).toContain('AI 生成内容未经事实核验');
+  const resize = wrapper.get('[role="separator"]');
+  expect(resize.attributes('aria-valuenow')).toBe('200');
+  await resize.trigger('keydown', { key: 'ArrowRight' });
+  expect(wrapper.get('.workspace').attributes('style')).toContain('--navigation-width: 210px');
+  await resize.trigger('keydown', { key: 'End' });
+  await resize.trigger('keydown', { key: 'ArrowRight' });
+  expect(resize.attributes('aria-valuenow')).toBe('340');
   await wrapper.find('.company-select').trigger('click');
   await wrapper.find('.job-select').trigger('click');
   await flushPromises();
   await wrapper.find('.version-bubble').trigger('click');
   expect(wrapper.find('#resume-document').text()).toContain('虚构经历');
+  const requirements = wrapper.find('#version-requirements');
+  expect(requirements.exists()).toBe(true);
+  expect(requirements.get('summary').text()).toContain('V1 使用的招聘要求');
+  expect(requirements.get('.requirements-text').text()).toBe('虚构历史招聘要求\n第二行');
+  expect(wrapper.get('#job-requirements').text()).toBe('虚构当前招聘要求');
   expect(wrapper.find('#export').attributes('disabled')).toBeUndefined();
   wrapper.unmount();
 });
@@ -139,7 +151,8 @@ test('clears a selected fictional version removed by a refreshed application lis
   await wrapper.find('[aria-label="修改虚构公司名称"]').trigger('click');
   await flushPromises();
   expect(wrapper.find('#resume-document').text()).not.toContain('虚构经历');
-  expect(wrapper.find('#export').attributes('disabled')).toBeDefined();
+  expect(wrapper.find('#export').exists()).toBe(false);
+  expect(wrapper.find('#export-pdf').exists()).toBe(false);
   wrapper.unmount();
 });
 
@@ -171,7 +184,8 @@ test('does not select a generated fictional version after switching jobs', async
   await flushPromises();
   expect(wrapper.find('#current-title').text()).toContain('虚构岗位 b');
   expect(wrapper.find('#resume-document').text()).not.toContain('虚构经历');
-  expect(wrapper.find('#export').attributes('disabled')).toBeDefined();
+  expect(wrapper.find('#export').exists()).toBe(false);
+  expect(wrapper.find('#export-pdf').exists()).toBe(false);
   wrapper.unmount();
 });
 

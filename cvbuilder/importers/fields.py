@@ -10,7 +10,7 @@ CHINA_MOBILE = re.compile(r"(?<!\d)(?:\+?86[ -]?)?1[3-9]\d{9}(?!\d)")
 NZ_MOBILE = re.compile(r"(?<!\d)(?:\+64[ -]?|0)2\d(?:[ -]?\d){7,9}(?!\d)")
 NAME_LABEL = re.compile(r"(?im)^[ \t]*(?:姓名|Name)[ \t]*[:：][ \t]*([^\n|｜,，;；]{2,40})")
 SKILL_HEADING = re.compile(r"^(?:专业技能|技能清单|技能[ /／、]+技术栈|技能|技术栈|Technical Skills|Skills)[ \t]*[:：]?[ \t]*(.*)$", re.I)
-OTHER_HEADING = re.compile(r"^(?:个人信息|教育经历|教育背景|工作经历|工作经验|项目经历|项目经验|证书|自我评价|求职意向|Personal|Education|Experience|Projects|Certificates)[ \t]*[:：]?$", re.I)
+OTHER_HEADING = re.compile(r"^(?:个人信息|教育经历|教育背景|工作经历|工作经验|项目经历|项目经验|证书|自我评价|求职意向|Personal|Education|Experience|Projects|Certificates)[ \t]*(?:[:：].*)?$", re.I)
 
 
 def extract_personal(text: str) -> dict[str, str]:
@@ -62,13 +62,13 @@ def explicit_skill_names(text: str) -> set[str]:
                 content.append(heading.group(1))
             continue
         if in_section and OTHER_HEADING.fullmatch(line):
-            break
+            in_section = False
         if in_section and line:
             content.append(line)
     names = set()
     for line in content:
-        for part in re.split(r"[、，,；;|｜\n]+", line):
-            part = re.sub(r"^[\s•·*\-\d.]+", "", part).strip()
+        for part in re.split(r"[、，,；;|｜\t]+|\s+[/／]\s+", line):
+            part = re.sub(r"^\s*(?:[•·*\-]\s*|\d+[.、)）]\s+)", "", part).strip()
             part = re.split(r"[：:]", part, maxsplit=1)[0].strip()
             part = re.sub(r"[（(](?:熟练|精通|了解|掌握|基础)[^）)]*[）)]$", "", part).strip()
             if part:
