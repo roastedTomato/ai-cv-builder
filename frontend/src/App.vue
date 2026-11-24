@@ -2,12 +2,11 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { api, errorMessage, isCloud, json, objectResult, queuedTask, stringField, waitTask } from './api';
 import type { BaseResumeData, Company, InterviewSession, Job, Template, Version, VisualSettings } from './types';
-import { normalizeVersion, sidebarModules, versionSummary } from './types';
+import { normalizeVersion, sidebarModules } from './types';
 import BaseResume from './components/BaseResume.vue';
 import CompanyTree from './components/CompanyTree.vue';
 import InterviewPanel from './components/InterviewPanel.vue';
 import ResumePreview from './components/ResumePreview.vue';
-import VersionGraph from './components/VersionGraph.vue';
 
 const colors = [
   { value: '#2C5263', name: '墨染蓝' }, { value: '#16766d', name: '青碧' },
@@ -60,7 +59,7 @@ const currentVersion = computed(() => draft.value || storedVersion.value);
 const dirty = computed(() => editing.value && draft.value !== null && snapshot(draft.value) !== savedSnapshot.value);
 const hasGenerated = computed(() => Boolean(selectedJob.value?.has_generated || selectedJob.value?.versions?.length));
 const currentMeta = computed(() => selectedJob.value
-  ? currentVersion.value ? editing.value ? `正在编辑 · 来源 V${currentVersion.value.number}` : versionSummary(selectedJob.value, currentVersion.value)
+  ? currentVersion.value ? editing.value ? `正在编辑 · 来源 V${currentVersion.value.number}` : `V${currentVersion.value.number}`
     : `招聘要求已保存 · ${selectedJob.value.versions?.length || 0} 个简历版本`
   : '从左侧选择公司和职位，查看简历版本。');
 let selectionEpoch = 0;
@@ -556,7 +555,7 @@ async function refreshInterviewView() { await refreshInterviews(); }
       <CompanyTree :companies="companies" :selected-company-id="selectedCompanyId" :selected-job-id="selectedJobId"
         :selected-version-id="selectedVersionId" @select-company="selectCompany" @select-job="selectJob"
         @rename-company="renameCompany" @delete-company="deleteCompany"
-        @edit-job="editJob" @delete-job="deleteJob" @add-job="jobFormOpen = true" />
+        @edit-job="editJob" @delete-job="deleteJob" @delete-version="deleteVersion" @add-job="jobFormOpen = true" />
       <div v-if="jobFormOpen" id="job-form-wrap"><h3>添加岗位</h3>
         <form id="job-form" class="compact-form" @submit.prevent="createJob">
           <input id="job-title" v-model="jobTitle" placeholder="职位名称" aria-label="职位名称" required />
@@ -606,8 +605,6 @@ async function refreshInterviewView() { await refreshInterviews(); }
           @click="activeTab = 'interview'; run(refreshInterviewView)">模拟面试</button>
       </div>
       <section v-if="activeTab === 'versions'" id="versions-panel" role="tabpanel">
-        <VersionGraph v-if="selectedJob?.versions?.length" :job="selectedJob" :selected-id="selectedVersionId"
-          @select="selectVersion" @delete="deleteVersion" />
         <p class="notice">AI 生成内容未经事实核验。请核对简历内容后再导出。</p>
         <div v-if="busy === 'generate' || busy === 'export'" id="generation-progress" class="progress-status" role="status" aria-live="polite">
           <span>{{ busy === 'generate' ? '正在根据基础简历和岗位要求生成简历模块…' : '正在导出文件…' }}</span>
@@ -623,14 +620,8 @@ async function refreshInterviewView() { await refreshInterviews(); }
       </section>
       <template v-else>
         <section id="interview-workspace" role="tabpanel">
-          <div v-if="selectedJob?.versions?.length" class="interview-version-picker" aria-label="选择面试简历版本">
-            <strong>选择面试简历版本</strong>
-            <div class="interview-version-buttons" role="group" aria-label="面试简历版本">
-              <button v-for="version in [...selectedJob.versions].sort((a, b) => a.number - b.number)" :key="version.id"
-                type="button" class="secondary" :aria-pressed="selectedVersionId === version.id" :disabled="!!busy"
-                @click="selectVersion(version)">V{{ version.number }}</button>
-            </div>
-            <button v-if="selectedVersionId && !editing" id="start-interview-here" type="button" :disabled="!!busy"
+          <div v-if="selectedVersionId && !editing" class="interview-version-picker">
+            <button id="start-interview-here" type="button" :disabled="!!busy"
               @click="startInterview">{{ currentInterview ? '用 V' + currentVersion?.number + ' 开始新面试' : '用 V' + currentVersion?.number + ' 开始面试' }}</button>
           </div>
           <InterviewPanel :job-selected="!!selectedJob" :session="currentInterview" :api="api" :cloud="cloud"

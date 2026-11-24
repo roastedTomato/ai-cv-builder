@@ -95,13 +95,6 @@ export function versionDate(version: Version): string {
   }).format(date);
 }
 
-export function versionSummary(job: Job, version: Version): string {
-  const source = version.source_version_id
-    ? `来源 V${version.source_version_number || '?'}${job.versions.some(item => item.id === version.source_version_id) ? '' : ' 已删除'}`
-    : '初始版本';
-  return [`V${version.number}`, versionDate(version), source].filter(Boolean).join(' · ');
-}
-
 export function normalizeVersion(version: Version): Version {
   // API versions are JSON data; this also unwraps Vue's reactive proxies.
   const value = JSON.parse(JSON.stringify(version)) as Version;

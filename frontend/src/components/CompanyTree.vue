@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Company, Job, Version } from '../types';
+import VersionGraph from './VersionGraph.vue';
 
 defineProps<{
   companies: Company[];
@@ -15,6 +16,7 @@ const emit = defineEmits<{
   (event: 'delete-company', company: Company): void;
   (event: 'edit-job', company: Company, job: Job): void;
   (event: 'delete-job', job: Job): void;
+  (event: 'delete-version', job: Job, version: Version): void;
   (event: 'add-job'): void;
 }>();
 </script>
@@ -40,11 +42,9 @@ const emit = defineEmits<{
             <button class="tree-action" type="button" title="修改职位" :aria-label="`修改${job.title}`" @click="emit('edit-job', company, job)">改</button>
             <button class="tree-action delete-action" type="button" title="删除职位及其版本" :aria-label="`删除${job.title}及其版本`" @click="emit('delete-job', job)">删</button>
           </div>
-          <div v-if="job.versions?.length" class="job-version-bubbles" aria-label="岗位简历版本">
-            <button v-for="version in [...job.versions].sort((a, b) => a.number - b.number)" :key="version.id"
-              class="job-version-bubble" :class="{ selected: version.id === selectedVersionId }" type="button"
-              :aria-pressed="version.id === selectedVersionId" @click="emit('select-job', company, job, version)">V{{ version.number }}</button>
-          </div>
+          <VersionGraph v-if="job.versions?.length" :job="job" :selected-id="selectedVersionId"
+            @select="emit('select-job', company, job, $event)"
+            @delete="(item, version) => emit('delete-version', item, version)" />
         </div>
         <button v-if="company.id === selectedCompanyId" id="add-job" class="add-job-inline" type="button" @click="emit('add-job')">＋ 添加职位</button>
       </div>

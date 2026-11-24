@@ -38,7 +38,7 @@ test('loads the Vue workspace and selects company, job and resume version', asyn
   wrapper.unmount();
 });
 
-test('starts an interview from a version selected in the interview tab', async () => {
+test('starts an interview from a version selected in the sidebar while viewing the interview tab', async () => {
   window.cvAuth = { enabled: false, ready: Promise.resolve(), url: path => path, headers: () => ({}) };
   const company = { id: 'fictional-company', name: '虚构公司', jobs: [{
     id: 'fictional-job', title: '虚构岗位', job_text: '虚构招聘要求', has_generated: true,
@@ -66,8 +66,9 @@ test('starts an interview from a version selected in the interview tab', async (
   await wrapper.find('#tab-interview').trigger('click');
   await flushPromises();
   expect(wrapper.find('#start-interview-here').exists()).toBe(false);
-  await wrapper.findAll('.interview-version-buttons button')[1].trigger('click');
-  expect(wrapper.findAll('.interview-version-buttons button')[1].attributes('aria-pressed')).toBe('true');
+  expect(wrapper.find('#interview-workspace .job-version-bubble').exists()).toBe(false);
+  await wrapper.findAll('.navigation .job-version-bubble')[1].trigger('click');
+  expect(wrapper.findAll('.navigation .job-version-bubble')[1].attributes('aria-pressed')).toBe('true');
   await wrapper.find('#start-interview-here').trigger('click');
   await flushPromises();
   expect(fetchMock).toHaveBeenCalledWith('/api/jobs/fictional-job/versions/fictional-v2/interviews', expect.objectContaining({ method: 'POST' }));

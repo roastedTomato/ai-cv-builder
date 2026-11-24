@@ -16,7 +16,7 @@ const emptyMessage = computed(() => {
   const job = props.job;
   if (!job) return '选择岗位版本后，这里会显示简历。';
   if (job.has_generated && !job.versions?.length) return '该岗位的版本已全部删除。请新建岗位以重新生成 V1。';
-  if (job.versions?.length) return '从上方版本图选择一个简历版本。';
+  if (job.versions?.length) return '从左侧投递图谱选择一个简历版本。';
   return '该岗位还没有简历版本。点击“确认生成简历”创建 V1。';
 });
 interface ResumeEntry {

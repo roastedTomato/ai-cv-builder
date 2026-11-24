@@ -30,7 +30,7 @@ const tree = computed(() => {
     <ul class="version-branches">
       <li v-for="branch in tree" :key="branch.version.id">
         <div class="version-graph-node">
-          <button class="version-bubble" :class="{ selected: branch.version.id === selectedId }" type="button"
+          <button class="version-bubble job-version-bubble" :class="{ selected: branch.version.id === selectedId }" type="button"
             :aria-label="`选择 V${branch.version.number}`" :aria-pressed="branch.version.id === selectedId"
             @click="emit('select', branch.version)">V{{ branch.version.number }}</button>
           <span class="version-graph-caption">{{ versionDate(branch.version) }}
