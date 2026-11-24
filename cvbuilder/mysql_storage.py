@@ -109,6 +109,8 @@ class MySQLStore:
             "module_order": _decode(row["module_order"]),
             "visual_settings": _decode(row["visual_settings"]),
         }
+        if row["saved_at"] is not None:
+            result["saved_at"] = _stamp(row["saved_at"])
         if row["source_version_id"] is not None:
             result["source_version_id"] = row["source_version_id"]
             result["source_version_number"] = int(row["source_version_number"])
@@ -148,13 +150,13 @@ class MySQLStore:
             cursor.execute("SELECT id,name FROM companies WHERE user_id=%s ORDER BY created_at,id", (self.user_id,))
             companies = [{"id": row["id"], "name": row["name"], "jobs": []} for row in cursor.fetchall()]
             cursor.execute(
-                "SELECT id,company_id,title,job_text,revision,version_counter FROM jobs "
+                "SELECT id,company_id,title,job_text,revision,version_counter,resume_draft FROM jobs "
                 "WHERE user_id=%s ORDER BY created_at,id", (self.user_id,)
             )
             jobs = cursor.fetchall()
             cursor.execute(
                 "SELECT id,job_id,number,source_version_id,source_version_number,job_text,"
-                "resume_content,module_order,visual_settings,created_at FROM resume_versions "
+                "resume_content,module_order,visual_settings,created_at,saved_at FROM resume_versions "
                 "WHERE user_id=%s ORDER BY job_id,number", (self.user_id,)
             )
             versions = cursor.fetchall()
@@ -166,6 +168,8 @@ class MySQLStore:
                 "revision": int(row["revision"]), "version_counter": int(row["version_counter"]),
                 "has_generated": int(row["version_counter"]) > 0, "versions": [],
             }
+            if row["resume_draft"] is not None:
+                job["resume_draft"] = _decode(row["resume_draft"])
             company_by_id[row["company_id"]]["jobs"].append(job)
             job_by_id[row["id"]] = job
         for row in versions:
@@ -230,7 +234,7 @@ class MySQLStore:
                 raise KeyError(job_id)
             cursor.execute(
                 "SELECT id,number,source_version_id,source_version_number,job_text,"
-                "resume_content,module_order,visual_settings,created_at FROM resume_versions "
+                "resume_content,module_order,visual_settings,created_at,saved_at FROM resume_versions "
                 "WHERE user_id=%s AND job_id=%s ORDER BY number", (self.user_id, job_id)
             )
             versions = [self._version(item) for item in cursor.fetchall()]
@@ -285,7 +289,7 @@ class MySQLStore:
     ) -> dict[str, Any]:
         with self._transaction() as cursor:
             cursor.execute(
-                "SELECT company_id,job_text,revision,version_counter FROM jobs "
+                "SELECT company_id,job_text,revision,version_counter,resume_draft FROM jobs "
                 "WHERE user_id=%s AND id=%s FOR UPDATE", (self.user_id, job_id)
             )
             job = cursor.fetchone()
@@ -303,7 +307,10 @@ class MySQLStore:
                 )
                 source = cursor.fetchone()
                 if source is None:
-                    raise KeyError(source_version_id)
+                    saved_draft = _decode(job["resume_draft"]) if job["resume_draft"] is not None else {}
+                    if saved_draft.get("id") != source_version_id:
+                        raise KeyError(source_version_id)
+                    source = saved_draft
             number = int(job["version_counter"]) + 1
             version_id, created = uuid.uuid4().hex, _now()
             cursor.execute(
@@ -326,6 +333,34 @@ class MySQLStore:
             result.update(source_version_id=source_version_id, source_version_number=int(source["number"]))
         return result
 
+    def save_resume_draft(self, job_id: str, version_id: str, content: Any,
+                          order: list[str], settings: dict[str, Any]) -> dict[str, Any]:
+        with self._transaction() as cursor:
+            cursor.execute(
+                "SELECT resume_draft FROM jobs WHERE user_id=%s AND id=%s FOR UPDATE",
+                (self.user_id, job_id),
+            )
+            job = cursor.fetchone()
+            if job is None:
+                raise KeyError(job_id)
+            cursor.execute(
+                "SELECT number,job_text FROM resume_versions WHERE user_id=%s AND job_id=%s AND id=%s",
+                (self.user_id, job_id, version_id),
+            )
+            source = cursor.fetchone()
+            previous = _decode(job["resume_draft"]) if job["resume_draft"] is not None else {}
+            if source is None:
+                if previous.get("id") != version_id:
+                    raise KeyError(version_id)
+                source = previous
+            draft = {
+                "id": version_id, "number": int(source["number"]), "job_text": source["job_text"],
+                "resume_content": content, "module_order": order, "visual_settings": settings,
+            }
+            cursor.execute("UPDATE jobs SET resume_draft=%s WHERE user_id=%s AND id=%s",
+                           (_json(draft), self.user_id, job_id))
+        return draft
+
     def save_edited_version(
         self, job_id: str, source_version_id: str, resume_content: Any,
         module_order: list[str], visual_settings: dict[str, Any],
@@ -337,7 +372,26 @@ class MySQLStore:
 
     def update_version(self, job_id: str, version_id: str, resume_content: Any,
                        module_order: list[str], visual_settings: dict[str, Any]) -> dict[str, Any]:
-        return self.save_edited_version(job_id, version_id, resume_content, module_order, visual_settings)
+        with self._transaction() as cursor:
+            cursor.execute(
+                "SELECT id,number,source_version_id,source_version_number,job_text,"
+                "resume_content,module_order,visual_settings,created_at,saved_at FROM resume_versions "
+                "WHERE user_id=%s AND job_id=%s AND id=%s FOR UPDATE",
+                (self.user_id, job_id, version_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(version_id)
+            updates = {
+                "resume_content": _json(resume_content), "module_order": _json(module_order),
+                "visual_settings": _json(visual_settings), "saved_at": _now(),
+            }
+            cursor.execute(
+                "UPDATE resume_versions SET resume_content=%s,module_order=%s,visual_settings=%s,saved_at=%s "
+                "WHERE user_id=%s AND job_id=%s AND id=%s",
+                (*updates.values(), self.user_id, job_id, version_id),
+            )
+            return self._version({**row, **updates})
 
     @staticmethod
     def _check_interview(session: dict[str, Any]) -> None:

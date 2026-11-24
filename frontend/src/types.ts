@@ -29,6 +29,7 @@ export interface Job {
   revision?: number;
   has_generated?: boolean;
   versions: Version[];
+  resume_draft?: Version;
 }
 
 export interface Company { id: string; name: string; jobs: Job[] }
@@ -78,13 +79,15 @@ export interface InterviewSession {
   error?: { message?: string } | null;
 }
 
+export const sidebarModules = ['skills', 'certificates'];
+
 export const sections = [
   ['summary', '个人简介'], ['education', '教育经历'], ['work', '工作经历'],
   ['projects', '项目经历'], ['skills', '技能'], ['certificates', '证书'],
 ] as const;
 
 export function versionDate(version: Version): string {
-  const raw = version.created_at || version.saved_at;
+  const raw = version.saved_at || version.created_at;
   if (!raw) return '';
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? raw : new Intl.DateTimeFormat('zh-CN', {

@@ -10,8 +10,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (event: 'select-company', company: Company): void;
-  (event: 'select-job', company: Company, job: Job): void;
-  (event: 'select-version', version: Version): void;
+  (event: 'select-job', company: Company, job: Job, version?: Version): void;
   (event: 'rename-company', company: Company): void;
   (event: 'delete-company', company: Company): void;
   (event: 'edit-job', company: Company, job: Job): void;
@@ -44,7 +43,7 @@ const emit = defineEmits<{
           <div v-if="job.versions?.length" class="job-version-bubbles" aria-label="岗位简历版本">
             <button v-for="version in [...job.versions].sort((a, b) => a.number - b.number)" :key="version.id"
               class="job-version-bubble" :class="{ selected: version.id === selectedVersionId }" type="button"
-              :aria-pressed="version.id === selectedVersionId" @click="emit('select-version', version)">V{{ version.number }}</button>
+              :aria-pressed="version.id === selectedVersionId" @click="emit('select-job', company, job, version)">V{{ version.number }}</button>
           </div>
         </div>
         <button v-if="company.id === selectedCompanyId" id="add-job" class="add-job-inline" type="button" @click="emit('add-job')">＋ 添加职位</button>

@@ -17,12 +17,11 @@ from . import ai, interview_ai
 from .cli import ROOT
 from .importers import ImportErrorBase, extract_text
 from .importers.fields import extract_personal, keep_explicit_skills
-from .templates import convert_to_pdf, fill_template_modular
+from .templates import DEFAULT_TEMPLATE_ID, TEMPLATE_IDS, convert_to_pdf, fill_template_modular
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_INLINE_RESULT_BYTES = 300 * 1024
 LOGGER = logging.getLogger("cvbuilder.cloud_tasks")
-TEMPLATE_IDS = {f"template-{i:02d}" for i in range(1, 4)}
 MODULES = {"summary", "education", "work", "projects", "skills", "certificates"}
 _cached_secret_arn: str | None = None
 
@@ -139,7 +138,7 @@ def _generate_version(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
     try:
         version = store.create_version(
             company["id"], job_id, content, order,
-            {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"},
+            {"template_id": DEFAULT_TEMPLATE_ID, "color": "#2C5263", "page_width": "standard"},
             job_text, initial_only=True,
         )
     except ValueError as exc:

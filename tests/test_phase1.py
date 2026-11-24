@@ -363,7 +363,7 @@ class PhaseOneTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             tmp_path = Path(folder)
             templates = create_templates(tmp_path / "templates")
-            self.assertEqual(len(templates), 3)
+            self.assertEqual(len(templates), 7)
             self.assertIn("个人简介", "\n".join(p.text for p in __import__("docx").Document(templates[2]).paragraphs))
             generated = fixture("generated-resume.sample.json")
             generated["skills"][0]["bullets"] = [{"text": "Python（项目使用）", "content_type": "rewrite", "source_ids": ["skill-001"]}]

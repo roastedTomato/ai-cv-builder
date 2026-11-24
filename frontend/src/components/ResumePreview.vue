@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { Job, ResumeContent, Version, VisualSettings } from '../types';
-import { sections } from '../types';
+import { sections, sidebarModules } from '../types';
 
 const props = defineProps<{
   job: Job | null;
@@ -31,6 +31,14 @@ interface ResumeEntry {
 const content = computed<ResumeContent>(() => props.version?.resume_content || {});
 const personal = computed(() => content.value.personal || {});
 const order = computed(() => props.version?.module_order || []);
+const moduleColumns = computed(() => {
+  if (props.visual.template_id !== 'template-06') return [{ name: 'full', keys: order.value }];
+  const sidebar = order.value.filter(key => sidebarModules.includes(key));
+  return [
+    { name: 'sidebar', keys: sidebar },
+    { name: 'main', keys: order.value.filter(key => !sidebar.includes(key)) },
+  ];
+});
 const heading = (key: string) => sections.find(([id]) => id === key)?.[1] || key;
 const isClaim = (key: string) => ['summary', 'gaps', 'suggestions'].includes(key);
 const entries = (key: string): ResumeEntry[] => {
@@ -48,8 +56,11 @@ const change = (path: string, event: Event) => props.onField(path, (event.target
   <div v-else id="resume-document" class="resume-document"
     :class="[`template-${visual.template_id || 'template-01'}`, `width-${visual.page_width || 'standard'}`, { editing }]"
     :style="{ '--accent': visual.color || '#2C5263' }">
-    <div class="doc-personal"><h1>{{ personal.name || '' }}</h1><p>{{ [personal.email, personal.phone, personal.location].filter(Boolean).join(' · ') }}</p></div>
-    <section v-for="key in order" :key="key" class="doc-module" :data-module="key">
+    <div class="doc-personal"><h1>{{ personal.name || '' }}</h1><p v-if="visual.template_id !== 'template-06'">{{ [personal.email, personal.phone, personal.location].filter(Boolean).join(' · ') }}</p></div>
+    <div class="doc-columns">
+    <div v-for="column in moduleColumns" :key="column.name" :class="`doc-column-${column.name}`">
+    <p v-if="column.name === 'sidebar'" class="doc-sidebar-contact">{{ [personal.email, personal.phone, personal.location].filter(Boolean).join('\n') }}</p>
+    <section v-for="key in column.keys" :key="key" class="doc-module" :data-module="key">
       <h2>{{ heading(key) }}<span v-if="editing" class="module-actions">
         <button type="button" title="上移" @click="onMove(key, -1)">↑</button>
         <button type="button" title="下移" @click="onMove(key, 1)">↓</button>
@@ -83,5 +94,7 @@ const change = (path: string, event: Event) => props.onField(path, (event.target
         </article>
       </template>
     </section>
+    </div>
+    </div>
   </div>
 </template>

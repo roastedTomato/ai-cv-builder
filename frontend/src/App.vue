@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { api, errorMessage, isCloud, json, objectResult, queuedTask, stringField, waitTask } from './api';
 import type { BaseResumeData, Company, InterviewSession, Job, Template, Version, VisualSettings } from './types';
-import { normalizeVersion, versionSummary } from './types';
+import { normalizeVersion, sidebarModules, versionSummary } from './types';
 import BaseResume from './components/BaseResume.vue';
 import CompanyTree from './components/CompanyTree.vue';
 import InterviewPanel from './components/InterviewPanel.vue';
@@ -19,12 +19,7 @@ const widths = [
   { value: 'standard', name: '简约内敛', width: '标准' },
   { value: 'wide', name: '现代留白', width: '宽幅' },
 ];
-const templateNames: Record<string, string> = {
-  'template-01': '书卷 · 清雅',
-  'template-02': '和纸 · 温润',
-  'template-03': '留白 · 现代',
-};
-const visualDefaults: VisualSettings = { template_id: 'template-01', color: '#2C5263', page_width: 'standard' };
+const visualDefaults: VisualSettings = { template_id: 'template-04', color: '#2C5263', page_width: 'standard' };
 const snapshot = (version: Version | null) => version ? JSON.stringify({
   resume_content: version.resume_content, module_order: version.module_order,
   visual_settings: version.visual_settings,
@@ -39,6 +34,8 @@ const selectedVersionId = ref<string | null>(null);
 const draft = ref<Version | null>(null);
 const savedSnapshot = ref('');
 const editing = ref(false);
+const savingVersion = ref(false);
+const saveFeedback = ref<{ text: string; error: boolean } | null>(null);
 const visual = ref<VisualSettings>({ ...visualDefaults });
 const activeTab = ref<'versions' | 'interview'>('versions');
 const currentInterview = ref<InterviewSession | null>(null);
@@ -63,7 +60,7 @@ const currentVersion = computed(() => draft.value || storedVersion.value);
 const dirty = computed(() => editing.value && draft.value !== null && snapshot(draft.value) !== savedSnapshot.value);
 const hasGenerated = computed(() => Boolean(selectedJob.value?.has_generated || selectedJob.value?.versions?.length));
 const currentMeta = computed(() => selectedJob.value
-  ? currentVersion.value ? versionSummary(selectedJob.value, currentVersion.value)
+  ? currentVersion.value ? editing.value ? `正在编辑 · 来源 V${currentVersion.value.number}` : versionSummary(selectedJob.value, currentVersion.value)
     : `招聘要求已保存 · ${selectedJob.value.versions?.length || 0} 个简历版本`
   : '从左侧选择公司和职位，查看简历版本。');
 let selectionEpoch = 0;
@@ -100,7 +97,8 @@ async function refreshApplications(): Promise<Company[]> {
     clearSelection();
   } else if (selectedJobId.value && !selectedJob.value) {
     clearSelection();
-  } else if (selectedVersionId.value && !storedVersion.value) {
+  } else if (selectedVersionId.value && !storedVersion.value &&
+    !(editing.value && selectedJob.value?.resume_draft?.id === selectedVersionId.value)) {
     selectionEpoch += 1;
     selectedVersionId.value = null;
     draft.value = null;
@@ -166,36 +164,62 @@ onMounted(async () => {
 });
 onUnmounted(() => { if (interviewTimer) window.clearInterval(interviewTimer); });
 
-async function saveVersion(): Promise<boolean> {
-  if (!draft.value || !selectedJobId.value || !selectedVersionId.value) return false;
-  const jobId = selectedJobId.value;
+async function saveVersion(asNew: boolean): Promise<boolean> {
+  if (savingVersion.value) return false;
+  if (!draft.value || !selectedJob.value || !selectedVersionId.value) {
+    saveFeedback.value = { text: '当前简历的来源版本不可用，请重新选择职位和版本。', error: true };
+    return false;
+  }
+  const jobId = selectedJob.value.id;
   const versionId = selectedVersionId.value;
   const epoch = selectionEpoch;
+  if (!asNew && !storedVersion.value) {
+    saveFeedback.value = { text: '来源版本已删除，请使用「另存为新版本」保留当前内容。', error: true };
+    return false;
+  }
+  savingVersion.value = true;
+  saveFeedback.value = { text: asNew ? '正在另存为新版本…' : '正在保存…', error: false };
   try {
     const candidate = normalizeVersion({ ...draft.value, visual_settings: visual.value });
-    const version = await api<Version>(`/api/jobs/${encodeURIComponent(jobId)}/versions/${encodeURIComponent(versionId)}/edits`,
-      json('POST', { resume_content: candidate.resume_content, module_order: candidate.module_order, visual_settings: candidate.visual_settings }));
-    await refreshApplications();
-    if (!selectionMatches(epoch, jobId, versionId)) return false;
+    const endpoint = asNew ? '/edits' : '';
+    const version = await api<Version>(`/api/jobs/${encodeURIComponent(jobId)}/versions/${encodeURIComponent(versionId)}${endpoint}`,
+      json(asNew ? 'POST' : 'PUT', { resume_content: candidate.resume_content, module_order: candidate.module_order, visual_settings: candidate.visual_settings }));
     const next = normalizeVersion(version);
+    const job = companies.value.flatMap(company => company.jobs).find(item => item.id === jobId);
+    if (job) {
+      const index = job.versions.findIndex(item => item.id === next.id);
+      if (index >= 0) job.versions[index] = next;
+      else job.versions.push(next);
+    }
+    if (!selectionMatches(epoch, jobId, versionId)) return false;
     selectedVersionId.value = next.id;
     draft.value = next;
     editing.value = false;
     savedSnapshot.value = snapshot(next);
-    notify(`已保存为 V${next.number}，原版本保留。`);
+    const message = asNew ? `已另存为 V${next.number}，原版本保留。` : `V${next.number} 已保存。`;
+    saveFeedback.value = { text: message, error: false };
+    notify(message);
     return true;
-  } catch (error) { notify(errorMessage(error), true); return false; }
+  } catch (error) {
+    const message = errorMessage(error);
+    saveFeedback.value = { text: `保存失败。${message}`, error: true };
+    notify(message, true);
+    return false;
+  }
+  finally { savingVersion.value = false; }
 }
 
 async function beforeSwitch(): Promise<boolean> {
+  if (savingVersion.value) return false;
   if (!dirty.value) return true;
-  const choice = prompt('当前版本有未保存修改。输入“保存”保存，输入“放弃”丢弃，或取消以留在当前版本。', '保存');
-  if (choice === '保存') return saveVersion();
+  const choice = prompt('当前版本有未保存修改。输入“保存”覆盖当前版本，输入“放弃”丢弃，或取消以留在当前版本。', '保存');
+  if (choice === '保存') return saveVersion(false);
   if (choice === '放弃') { draft.value = storedVersion.value ? normalizeVersion(storedVersion.value) : null; editing.value = false; return true; }
   return false;
 }
 
 function clearSelection() {
+  saveFeedback.value = null;
   selectionEpoch += 1;
   selectedJobId.value = null;
   selectedVersionId.value = null;
@@ -213,10 +237,12 @@ async function selectCompany(company: Company) {
   jobFormOpen.value = false;
 }
 
-async function selectJob(company: Company, job: Job) {
+async function selectJob(company: Company, job: Job, version?: Version) {
+  if (version && selectedJob.value?.id === job.id) return selectVersion(version);
   if (!await beforeSwitch()) return;
   selectedCompanyId.value = company.id;
   selectedJobId.value = job.id;
+  saveFeedback.value = null;
   selectionEpoch += 1;
   selectedVersionId.value = null;
   draft.value = null;
@@ -224,18 +250,38 @@ async function selectJob(company: Company, job: Job) {
   jobEditing.value = false;
   invalidateInterview();
   sessionStorage.setItem('cv-selected-job', job.id);
+  if (version) showVersion(version);
   await run(async () => { await refreshInterviews(job.id); });
 }
 
 async function selectVersion(version: Version) {
   if (!await beforeSwitch()) return;
+  showVersion(version);
+}
+
+function showVersion(version: Version) {
   const next = normalizeVersion(version);
   selectionEpoch += 1;
+  saveFeedback.value = null;
   selectedVersionId.value = version.id;
   draft.value = next;
   visual.value = { ...visualDefaults, ...next.visual_settings };
   savedSnapshot.value = snapshot(next);
   editing.value = false;
+}
+
+async function openDraft() {
+  if (!await beforeSwitch()) return;
+  const saved = selectedJob.value?.resume_draft;
+  if (!saved) return;
+  saveFeedback.value = null;
+  selectionEpoch += 1;
+  selectedVersionId.value = saved.id;
+  draft.value = normalizeVersion(saved);
+  visual.value = { ...visualDefaults, ...saved.visual_settings };
+  savedSnapshot.value = snapshot(draft.value);
+  activeTab.value = 'versions';
+  editing.value = true;
 }
 
 async function createCompany() {
@@ -373,7 +419,7 @@ async function createVersion() {
     selectedVersionId.value = next.id; draft.value = next;
     visual.value = { ...visualDefaults, ...next.visual_settings };
     savedSnapshot.value = snapshot(next); editing.value = false;
-    notify('已生成 V1，编辑保存可创建下一版。');
+    notify('已生成 V1，可以编辑、保存或另存为新版本。');
   } catch (error) { notify(errorMessage(error), true); }
   finally { busy.value = null; }
 }
@@ -402,7 +448,14 @@ function updateField(path: string, value: string) {
 function moveModule(key: string, direction: -1 | 1) {
   if (!currentVersion.value) return;
   const next = normalizeVersion(draft.value || currentVersion.value);
-  const from = next.module_order.indexOf(key), to = from + direction;
+  const from = next.module_order.indexOf(key);
+  let to = from + direction;
+  if (visual.value.template_id === 'template-06') {
+    const onSidebar = sidebarModules.includes(key);
+    while (to >= 0 && to < next.module_order.length && sidebarModules.includes(next.module_order[to]) !== onSidebar) {
+      to += direction;
+    }
+  }
   if (from >= 0 && to >= 0 && to < next.module_order.length) {
     [next.module_order[from], next.module_order[to]] = [next.module_order[to], next.module_order[from]];
   }
@@ -411,6 +464,7 @@ function moveModule(key: string, direction: -1 | 1) {
 
 function cancelVersion() {
   const restored = storedVersion.value ? normalizeVersion(storedVersion.value) : null;
+  saveFeedback.value = null;
   draft.value = restored;
   visual.value = { ...visualDefaults, ...(restored?.visual_settings || {}) };
   editing.value = false;
@@ -500,7 +554,7 @@ async function refreshInterviewView() { await refreshInterviews(); }
         <button type="submit">添加</button>
       </form>
       <CompanyTree :companies="companies" :selected-company-id="selectedCompanyId" :selected-job-id="selectedJobId"
-        :selected-version-id="selectedVersionId" @select-company="selectCompany" @select-job="selectJob" @select-version="selectVersion"
+        :selected-version-id="selectedVersionId" @select-company="selectCompany" @select-job="selectJob"
         @rename-company="renameCompany" @delete-company="deleteCompany"
         @edit-job="editJob" @delete-job="deleteJob" @add-job="jobFormOpen = true" />
       <div v-if="jobFormOpen" id="job-form-wrap"><h3>添加岗位</h3>
@@ -521,11 +575,15 @@ async function refreshInterviewView() { await refreshInterviews(); }
         <p id="current-meta" class="hint">{{ currentMeta }}</p>
       </div><div class="row tight">
         <button id="create-version" type="button" :disabled="!selectedJob || editing || hasGenerated || !!busy" @click="createVersion">{{ hasGenerated ? 'V1 已生成' : '确认生成简历' }}</button>
-        <button v-if="currentVersion && !editing" id="edit-version" class="secondary" type="button" @click="draft = normalizeVersion(currentVersion); editing = true">编辑</button>
-        <template v-if="editing"><button id="save-version" type="button" @click="saveVersion">保存</button>
-          <button id="cancel-version" class="secondary" type="button" @click="cancelVersion">取消</button></template>
+        <button v-if="currentVersion && !editing" id="edit-version" class="secondary" type="button" @click="draft = normalizeVersion(currentVersion); editing = true; saveFeedback = null">编辑</button>
+        <button v-if="selectedJob?.resume_draft && activeTab === 'versions' && !editing" id="open-resume-draft"
+          class="secondary" type="button" @click="openDraft">打开已有草稿</button>
+        <template v-if="editing"><button id="save-current-version" type="button" :disabled="savingVersion" @click="saveVersion(false)">保存</button>
+          <button id="save-version" class="secondary" type="button" :disabled="savingVersion" @click="saveVersion(true)">另存为新版本</button>
+          <button id="cancel-version" class="secondary" type="button" :disabled="savingVersion" @click="cancelVersion">取消</button></template>
       </div></div>
-
+      <p v-if="saveFeedback" id="resume-save-status" class="hint" :class="{ error: saveFeedback.error }"
+        role="status">{{ saveFeedback.text }}</p>
       <section v-if="selectedJob && activeTab !== 'interview'" id="job-details" class="job-details">
         <div class="section-heading"><h3>目标职位与招聘要求</h3>
           <button v-if="!jobEditing" id="edit-job" class="secondary small" type="button"
@@ -555,7 +613,7 @@ async function refreshInterviewView() { await refreshInterviews(); }
           <span>{{ busy === 'generate' ? '正在根据基础简历和岗位要求生成简历模块…' : '正在导出文件…' }}</span>
           <progress aria-label="正在处理岗位简历" />
         </div>
-        <ResumePreview :job="selectedJob" :version="currentVersion" :editing="editing" :visual="visual"
+        <ResumePreview :job="selectedJob" :version="currentVersion" :editing="editing" :visual="visual" :inert="savingVersion || undefined"
           :on-field="updateField" :on-move="moveModule" />
         <section v-if="currentVersion" class="version-requirements">
           <h3>V{{ currentVersion.number }} 使用的招聘要求</h3>
@@ -581,20 +639,20 @@ async function refreshInterviewView() { await refreshInterviews(); }
       </template>
     </section>
 
-    <aside class="card appearance">
+    <aside class="card appearance" :inert="savingVersion || undefined">
       <div class="appearance-title"><p class="panel-kicker">模板 · 配色 · 导出</p><h2>风格工坊</h2></div>
       <section class="appearance-section"><h3>简历模板</h3><div id="template-cards" class="template-cards" role="group" aria-label="简历模板">
         <button v-for="item in templates" :key="item.id" class="template-card" :class="{ selected: visual.template_id === item.id }"
           type="button" :aria-pressed="visual.template_id === item.id" :disabled="!currentVersion" @click="updateVisual('template_id', item.id)">
-          <span class="template-miniature" aria-hidden="true"><img v-if="templateNames[item.id]" :src="`/static/atelier-${item.id}.webp`" alt="" /></span>
-          <span>{{ templateNames[item.id] || item.name }}</span>
+          <span class="template-miniature" :class="item.id" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>{{ item.name }}</span>
         </button>
       </div></section>
       <section class="appearance-section"><h3>主题配色</h3><div id="color-swatches" class="color-swatches" role="group" aria-label="主题颜色">
         <button v-for="(item, index) in colors" :key="item.value" type="button" class="color-swatch"
           :class="{ selected: visual.color?.toLowerCase() === item.value.toLowerCase() }"
           :style="{ '--swatch-position': `${index * 20}%` }" :aria-label="item.name" :aria-pressed="visual.color?.toLowerCase() === item.value.toLowerCase()"
-          :title="item.name" :disabled="!currentVersion" @click="updateVisual('color', item.value)"><span class="color-swatch-dot" aria-hidden="true" /><span class="color-swatch-name">{{ item.name }}</span></button>
+          :title="item.name" :disabled="!currentVersion || visual.template_id === 'template-04'" @click="updateVisual('color', item.value)"><span class="color-swatch-dot" aria-hidden="true" /><span class="color-swatch-name">{{ item.name }}</span></button>
       </div></section>
       <section class="appearance-section"><h3>排版细节</h3><div id="width-options" class="width-options" role="group" aria-label="页面宽度">
         <button v-for="item in widths" :key="item.value" type="button" :class="{ selected: visual.page_width === item.value }"

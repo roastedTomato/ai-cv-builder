@@ -21,13 +21,14 @@ class MySQLMigrationTests(unittest.TestCase):
         from cvbuilder.mysql_migrate import handler
         first = handler({}, None)
         second = handler({}, None)
-        self.assertEqual(first["version"], "002_interview_answered_at")
+        self.assertEqual(first["version"], "004_resume_version_saved_at")
         self.assertFalse(second["applied"])
         from cvbuilder.mysql_storage import MySQLStore
         with MySQLStore("fictional-migration-check")._transaction() as cursor:
             cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
             self.assertEqual([row["version"] for row in cursor.fetchall()],
-                             ["001_initial_mysql", "002_interview_answered_at"])
+                             ["001_initial_mysql", "002_interview_answered_at", "003_job_resume_draft",
+                              "004_resume_version_saved_at"])
             cursor.execute("SHOW COLUMNS FROM interview_turns LIKE 'answered_at'")
             self.assertIsNotNone(cursor.fetchone())
 

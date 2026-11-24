@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("resume", type=Path)
     p.add_argument("requirement", type=Path)
     p.add_argument("--output", type=Path, required=True)
-    p = sub.add_parser("make-templates", help="生成三份规范化实验模板")
+    p = sub.add_parser("make-templates", help="生成规范化简历模板")
     p.add_argument("--output-dir", type=Path, default=ROOT / "templates")
     p = sub.add_parser("export", help="填充模板并导出 DOCX 与 PDF")
     p.add_argument("resume", type=Path)

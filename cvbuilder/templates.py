@@ -8,7 +8,6 @@ import tempfile
 import textwrap
 import glob
 import zipfile
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,15 @@ from docx.oxml.ns import qn
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKENS = ("name", "email", "phone", "location", "summary", "education", "work", "projects", "skills", "certificates")
+DEFAULT_TEMPLATE_ID = "template-04"
+PUBLIC_TEMPLATES = (
+    {"id": DEFAULT_TEMPLATE_ID, "name": "经典单栏"},
+    {"id": "template-05", "name": "现代单栏"},
+    {"id": "template-06", "name": "侧栏双栏"},
+    {"id": "template-07", "name": "创意版"},
+)
+TEMPLATE_IDS = {"template-01", "template-02", "template-03"} | {item["id"] for item in PUBLIC_TEMPLATES}
+SIDEBAR_SECTIONS = {"skills", "certificates"}
 SECTIONS = ("summary", "education", "work", "projects", "skills", "certificates")
 
 
@@ -73,6 +81,10 @@ def create_templates(output_dir: Path | None = None) -> list[Path]:
         (1, "2C5263", "简历", "简洁蓝"),
         (2, "80664B", "个人简历", "暖色单栏"),
         (3, "365B48", "RESUME", "清新绿"),
+        (4, "222222", "简历", "经典单栏"),
+        (5, "2C5263", "简历", "现代单栏"),
+        (6, "2C5263", "简历", "侧栏双栏"),
+        (7, "2C5263", "简历", "创意版"),
     ):
         path = folder / f"template-{number:02d}.docx"
         if path.exists():
@@ -93,14 +105,16 @@ def create_templates(output_dir: Path | None = None) -> list[Path]:
         normal.paragraph_format.space_after = Pt(4)
 
         p = doc.add_paragraph()
-        p.alignment = {1: WD_ALIGN_PARAGRAPH.LEFT, 2: WD_ALIGN_PARAGRAPH.CENTER, 3: WD_ALIGN_PARAGRAPH.RIGHT}[number]
+        p.alignment = {2: WD_ALIGN_PARAGRAPH.CENTER, 3: WD_ALIGN_PARAGRAPH.RIGHT}.get(number, WD_ALIGN_PARAGRAPH.LEFT)
         run = p.add_run("{{name}}")
         run.bold = True
         _apply_chinese_font(run.font)
-        run.font.size = Pt(23)
+        run.font.size = Pt(30 if number == 7 else 23)
+        p.paragraph_format.space_before = Pt(12 if number == 7 else 0)
+        p.paragraph_format.space_after = Pt(8 if number == 7 else 4)
         run.font.color.rgb = RGBColor.from_string(color)
         p = doc.add_paragraph()
-        p.alignment = {1: WD_ALIGN_PARAGRAPH.LEFT, 2: WD_ALIGN_PARAGRAPH.CENTER, 3: WD_ALIGN_PARAGRAPH.RIGHT}[number]
+        p.alignment = {2: WD_ALIGN_PARAGRAPH.CENTER, 3: WD_ALIGN_PARAGRAPH.RIGHT}.get(number, WD_ALIGN_PARAGRAPH.LEFT)
         p.add_run("{{email}}  ·  {{phone}}  ·  {{location}}")
         for token in SECTIONS:
             heading = doc.add_paragraph()
@@ -112,6 +126,17 @@ def create_templates(output_dir: Path | None = None) -> list[Path]:
             r.bold = True
             _apply_chinese_font(r.font)
             r.font.size = Pt(13)
+            if number >= 4:
+                heading.paragraph_format.space_before = Pt(9)
+                heading.paragraph_format.space_after = Pt(3)
+            if number in (5, 7):
+                border = OxmlElement("w:pBdr")
+                edge = OxmlElement("w:bottom" if number == 5 else "w:left")
+                for attr, value in {"val": "single", "sz": "4" if number == 5 else "14",
+                                    "space": "3", "color": color}.items():
+                    edge.set(qn(f"w:{attr}"), value)
+                border.append(edge)
+                heading._p.get_or_add_pPr().append(border)
             r.font.color.rgb = RGBColor.from_string(color)
             content = doc.add_paragraph(f"{{{{{token}}}}}")
             content.paragraph_format.keep_together = False
@@ -263,8 +288,13 @@ def fill_template_modular(template_path: Path, content: dict[str, Any], module_o
     }
     name_p = next((p for p in paragraphs if p.text.strip() == "{{name}}"), None)
     contact_p = next((p for p in paragraphs if "{{email}}" in p.text), None)
-    if name_p is not None: name_p.text = values["name"]
-    if contact_p is not None: contact_p.text = values["contact"]
+    if name_p is not None:
+        if template_path.stem in {"template-01", "template-02", "template-03"}:
+            name_p.text = values["name"]
+        else:
+            name_p.runs[0].text = values["name"]
+    if contact_p is not None:
+        contact_p.text = values["contact"]
     groups = {}
     for key, label in section_labels.items():
         token = "{{" + key + "}}"
@@ -285,20 +315,51 @@ def fill_template_modular(template_path: Path, content: dict[str, Any], module_o
         for key in module_order:
             if key in groups:
                 for paragraph in groups[key]:
-                    anchor_element.addnext(deepcopy(paragraph._p))
-                    anchor_element = anchor_element.getnext()
+                    anchor_element.addnext(paragraph._p)
+                    anchor_element = paragraph._p
     accent = str(visual_settings.get("color", visual_settings.get("accent_color", "#2C5263"))).lstrip("#")
+    if template_path.stem == DEFAULT_TEMPLATE_ID:
+        accent = "222222"
     if re.fullmatch(r"[0-9A-Fa-f]{6}", accent):
         for paragraph in doc.paragraphs:
             if paragraph.text.strip() == values["name"] or paragraph.text.strip() in section_labels.values() or paragraph.text.strip() == "SUMMARY":
                 for run in paragraph.runs:
                     run.font.color.rgb = RGBColor.from_string(accent.upper())
+                for edge in paragraph._p.xpath("./w:pPr/w:pBdr/*"):
+                    edge.set(qn("w:color"), accent.upper())
     width_setting = visual_settings.get("page_width", "standard")
     widths = {"narrow": 180, "standard": 210, "wide": 240}
     width = widths.get(width_setting, width_setting)
     if isinstance(width, (int, float)) and 170 <= width <= 250:
         for section in doc.sections:
             section.page_width = Mm(width)
+    if template_path.stem == "template-06":
+        section = doc.sections[0]
+        available = section.page_width - section.left_margin - section.right_margin
+        table = doc.add_table(rows=1, cols=2)
+        table.autofit = False
+        sidebar_width = int(available * 0.30)
+        left, right = table.rows[0].cells
+        for column, cell, cell_width in zip(table.columns, (left, right), (sidebar_width, available - sidebar_width)):
+            column.width = cell.width = cell_width
+        shading = OxmlElement("w:shd")
+        shading.set(qn("w:fill"), "F0F4F5")
+        left._tc.get_or_add_tcPr().append(shading)
+        if contact_p is not None and values["contact"]:
+            metadata = content["personal"]
+            contact_p.text = "\n".join(str(metadata[key]).strip() for key in ("email", "phone", "location")
+                                       if metadata.get(key))
+            left._tc.append(contact_p._p)
+        elif contact_p is not None:
+            _remove_paragraph(contact_p)
+        for key in module_order:
+            if key in groups:
+                destination = left if key in SIDEBAR_SECTIONS else right
+                for paragraph in groups[key]:
+                    destination._tc.append(paragraph._p)
+        for cell in (left, right):
+            if len(cell.paragraphs) > 1:
+                _remove_paragraph(cell.paragraphs[0])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
     with zipfile.ZipFile(output_path) as archive:

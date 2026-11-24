@@ -39,7 +39,7 @@ from .cli import ROOT, read_json
 from .importers import ImportErrorBase, extract_text
 from .importers.fields import extract_personal, keep_explicit_skills
 from .mysql_storage import MySQLResumeStore, MySQLJobStore
-from .templates import convert_to_pdf, fill_template, fill_template_text, fill_template_modular
+from .templates import DEFAULT_TEMPLATE_ID, PUBLIC_TEMPLATES, TEMPLATE_IDS, convert_to_pdf, fill_template, fill_template_text, fill_template_modular
 
 SCHEMAS = ROOT / "docs" / "schemas"
 WEB_DIR = ROOT / "web"
@@ -51,7 +51,6 @@ store = MySQLResumeStore()
 job_store = MySQLJobStore()
 drafts: dict[str, dict[str, Any]] = {}
 RESUME_MODULES = {"summary", "education", "work", "projects", "skills", "certificates"}
-TEMPLATE_IDS = {f"template-{number:02d}" for number in range(1, 4)}
 
 
 def _interview_error(exc: Exception, fallback: str) -> dict[str, str]:
@@ -138,7 +137,7 @@ async def index(request: Request):
 
 @app.get("/api/templates")
 async def list_templates():
-    return [{"id": f"template-{n:02d}", "name": name} for n, name in enumerate(("简洁蓝", "暖色单栏", "清新绿"), 1)]
+    return list(PUBLIC_TEMPLATES)
 
 
 @app.get("/api/resume")
@@ -258,7 +257,7 @@ async def create_job_version(job_id: str):
         raise HTTPException(502, detail={"code": "ai_error", "message": message}) from exc
     module_order = [key for key in ("summary", "education", "work", "projects", "skills", "certificates") if content.get(key)]
     try:
-        return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"}, job_text=job["job_text"])
+        return job_store.create_version(parent[0]["id"], job_id, content, module_order, {"template_id": DEFAULT_TEMPLATE_ID, "color": "#2C5263", "page_width": "standard"}, job_text=job["job_text"])
     except ValueError as exc:
         code = "conflict" if "请刷新后重试" in str(exc) else "version_exists"
         raise HTTPException(409, detail={"code": code, "message": str(exc)}) from exc
@@ -267,15 +266,35 @@ async def create_job_version(job_id: str):
 @app.post("/api/jobs/{job_id}/versions/{version_id}/edits")
 async def update_job_version(job_id: str, version_id: str, payload: dict[str, Any]):
     try:
-        state = job_store.load()
-        located = next(((job, version) for company in state["companies"] for job in company.get("jobs", []) for version in job.get("versions", []) if version.get("id") == version_id and job.get("id") == job_id), None)
-        if located is None:
-            raise KeyError(version_id)
         content = payload.get("resume_content")
         order = payload.get("module_order")
         settings = payload.get("visual_settings")
         validate_editor_payload(content, order, settings)
         return job_store.save_edited_version(job_id, version_id, content, order, settings)
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.put("/api/jobs/{job_id}/versions/{version_id}/draft")
+async def save_resume_draft(job_id: str, version_id: str, payload: dict[str, Any]):
+    content, order, settings = payload.get("resume_content"), payload.get("module_order"), payload.get("visual_settings")
+    try:
+        validate_editor_payload(content, order, settings)
+        return job_store.save_resume_draft(job_id, version_id, content, order, settings)
+    except KeyError as exc:
+        raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "validation_error", "message": str(exc)}) from exc
+
+
+@app.put("/api/jobs/{job_id}/versions/{version_id}")
+async def overwrite_resume_version(job_id: str, version_id: str, payload: dict[str, Any]):
+    content, order, settings = payload.get("resume_content"), payload.get("module_order"), payload.get("visual_settings")
+    try:
+        validate_editor_payload(content, order, settings)
+        return job_store.update_version(job_id, version_id, content, order, settings)
     except KeyError as exc:
         raise HTTPException(404, detail={"code": "not_found", "message": "岗位简历版本不存在。"}) from exc
     except ValueError as exc:
@@ -593,7 +612,7 @@ async def export_resume(payload: dict[str, Any]):
     resume_content = payload.get("resume_content")
     module_order = payload.get("module_order")
     visual_settings = payload.get("visual_settings") or {}
-    templates = {f"template-{n:02d}": ROOT / "templates" / f"template-{n:02d}.docx" for n in range(1, 4)}
+    templates = {template: ROOT / "templates" / f"{template}.docx" for template in TEMPLATE_IDS}
     if template_id not in templates or fmt not in {"docx", "pdf"}:
         raise HTTPException(422, detail={"code": "validation_error", "message": "请选择有效模板和导出格式。"})
     if resume_content is not None:

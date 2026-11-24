@@ -51,6 +51,16 @@ class MySQLWebTests(unittest.TestCase):
             changed = client.patch(f"/api/jobs/{job['id']}", json={
                 "title": "虚构测试职位", "job_text": "虚构测试新要求", "expected_revision": 0})
             self.assertEqual(changed.status_code, 200)
+            draft_content = {"summary": [{"text": "虚构测试草稿"}]}
+            draft_payload = {"resume_content": draft_content, "module_order": ["summary"],
+                             "visual_settings": {"template_id": "template-06", "color": "#2C5263"}}
+            draft_url = f"/api/jobs/{job['id']}/versions/{first['id']}/draft"
+            self.assertEqual(client.put(draft_url, json=draft_payload).status_code, 200)
+            reopened_job = MySQLJobStore(user_id).load()["companies"][0]["jobs"][0]
+            self.assertEqual(reopened_job["resume_draft"]["resume_content"], draft_content)
+            self.assertEqual(reopened_job["resume_draft"]["visual_settings"], draft_payload["visual_settings"])
+            self.assertEqual(reopened_job["versions"][0]["resume_content"], draft)
+            self.assertEqual(reopened_job["version_counter"], 1)
             edited = client.post(f"/api/jobs/{job['id']}/versions/{first['id']}/edits", json={
                 "resume_content": draft, "module_order": ["summary"],
                 "visual_settings": {"template_id": "template-01", "color": "#2C5263", "page_width": "standard"}})
@@ -59,10 +69,32 @@ class MySQLWebTests(unittest.TestCase):
             session = client.post(f"/api/jobs/{job['id']}/versions/{first['id']}/interviews").json()
             self.assertEqual(session["job_text"], "虚构测试旧要求")
             self.assertEqual(session["turns"][0]["question"], "虚构测试：请介绍经历 1")
+            version_url = f"/api/jobs/{job['id']}/versions/{first['id']}"
+            overwritten = client.put(version_url, json=draft_payload)
+            self.assertEqual(overwritten.status_code, 200)
+            self.assertEqual(overwritten.json()["id"], first["id"])
+            self.assertEqual(overwritten.json()["number"], 1)
+            self.assertEqual(overwritten.json()["created_at"], first["created_at"])
+            self.assertGreaterEqual(overwritten.json()["saved_at"], first["created_at"])
+            self.assertEqual(overwritten.json()["job_text"], first["job_text"])
+            edited_version = edited.json()
+            child_url = f"/api/jobs/{job['id']}/versions/{edited_version['id']}"
+            child = client.put(child_url, json=draft_payload).json()
+            self.assertEqual(child["source_version_id"], first["id"])
+            self.assertEqual(child["source_version_number"], 1)
+            with self.assertRaises(KeyError):
+                MySQLJobStore("fictional-other-user").update_version(
+                    job["id"], first["id"], draft_content, ["summary"], {},
+                )
             self.assertEqual(MySQLResumeStore(user_id).load(), base)
             reopened = MySQLJobStore(user_id)
-            self.assertEqual([v["number"] for v in reopened.load()["companies"][0]["jobs"][0]["versions"]], [1, 2])
+            persisted = reopened.load()["companies"][0]["jobs"][0]
+            self.assertEqual([v["number"] for v in persisted["versions"]], [1, 2])
+            self.assertEqual(persisted["version_counter"], 2)
+            self.assertEqual(persisted["versions"][0]["resume_content"], draft_content)
+            self.assertEqual(persisted["resume_draft"]["resume_content"], draft_content)
             self.assertEqual(reopened.get_interview(session["id"])["job_text"], "虚构测试旧要求")
+            self.assertEqual(reopened.get_interview(session["id"])["resume_content"], draft)
             self.assertEqual(client.post("/api/reset").status_code, 200)
             self.assertIsNone(MySQLResumeStore(user_id).load())
             self.assertEqual(MySQLJobStore(user_id).load(), {"companies": []})

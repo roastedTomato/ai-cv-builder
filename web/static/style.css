@@ -1032,3 +1032,25 @@ body {
   box-shadow: none;
 }
 .export-buttons #export { background-image: url("/static/atelier-word.webp"); }
+
+.template-template-04 .doc-personal,
+.template-template-04 .doc-module h2 { border: 0; }
+.template-template-04 .doc-personal h1,
+.template-template-04 .doc-module h2 { color: #222; }
+.template-template-05 .doc-module h2 { border-bottom: 1px solid var(--accent); }
+.template-template-06 .doc-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 7fr); gap: 18px; }
+.template-template-06 .doc-column-sidebar { padding: 12px; background: #f0f4f5; overflow-wrap: anywhere; }
+.doc-sidebar-contact { white-space: pre-line; margin: 0; font-size: 12px; line-height: 1.6; }
+.template-template-07 .doc-personal { padding-top: 12px; border: 0; }
+.template-template-07 .doc-personal h1 { font-size: 32px; }
+.template-template-07 .doc-module h2 { padding: 3px 0 3px 9px; border: 0; border-left: 3px solid var(--accent); }
+.template-miniature i { display: block; height: 2px; margin: 4px 18%; background: #83909a; }
+.template-miniature i:first-child { margin-top: 25%; width: 40%; height: 4px; background: #314d5e; }
+.template-miniature.template-04 i:first-child { background: #222; }
+.template-miniature.template-05 i:nth-child(2) { background: #477e91; }
+.template-miniature.template-06 { box-shadow: inset 12px 0 #c0d1d6; }
+.template-miniature.template-06 i { margin-left: 38%; }
+.template-miniature.template-07 i:first-child { height: 8px; background: #714268; }
+@media (max-width: 700px) {
+  .template-template-06 .doc-columns { grid-template-columns: minmax(0, 1fr); }
+}

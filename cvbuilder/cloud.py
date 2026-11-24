@@ -19,6 +19,7 @@ except ImportError:  # Local unit tests can run before the cloud extra is instal
     Mangum = None
 
 from .mysql_storage import MySQLStore as CloudStore
+from .templates import PUBLIC_TEMPLATES, TEMPLATE_IDS
 from .web import validate, validate_required_base_fields, validate_editor_payload
 
 
@@ -98,7 +99,7 @@ def _task(store: CloudStore, kind: str, task_input: dict[str, Any]) -> dict[str,
 
 @app.get("/api/templates")
 def templates(_store: CloudStore = Depends(cloud_store)):
-    return [{"id": f"template-{n:02d}", "name": name} for n, name in enumerate(("简洁蓝", "暖色单栏", "清新绿"), 1)]
+    return list(PUBLIC_TEMPLATES)
 
 
 @app.get("/api/resume")
@@ -210,6 +211,30 @@ def update_version(job_id: str, version_id: str, payload: dict[str, Any], store:
     try:
         validate_editor_payload(content, order, settings)
         return store.save_edited_version(job_id, version_id, content, order, settings)
+    except ValueError as exc:
+        fail(422, "validation_error", str(exc))
+    except KeyError:
+        fail(404, "not_found", "岗位简历版本不存在。")
+
+
+@app.put("/api/jobs/{job_id}/versions/{version_id}/draft")
+def save_resume_draft(job_id: str, version_id: str, payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
+    content, order, settings = payload.get("resume_content"), payload.get("module_order"), payload.get("visual_settings")
+    try:
+        validate_editor_payload(content, order, settings)
+        return store.save_resume_draft(job_id, version_id, content, order, settings)
+    except ValueError as exc:
+        fail(422, "validation_error", str(exc))
+    except KeyError:
+        fail(404, "not_found", "岗位简历版本不存在。")
+
+
+@app.put("/api/jobs/{job_id}/versions/{version_id}")
+def overwrite_resume_version(job_id: str, version_id: str, payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
+    content, order, settings = payload.get("resume_content"), payload.get("module_order"), payload.get("visual_settings")
+    try:
+        validate_editor_payload(content, order, settings)
+        return store.update_version(job_id, version_id, content, order, settings)
     except ValueError as exc:
         fail(422, "validation_error", str(exc))
     except KeyError:
@@ -420,7 +445,7 @@ def generate(payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
 def export(payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
     job_id, version_id = payload.get("job_id"), payload.get("version_id")
     template_id, fmt = payload.get("template_id"), payload.get("format")
-    if template_id not in {f"template-{n:02d}" for n in range(1, 4)} or fmt not in {"docx", "pdf"}:
+    if template_id not in TEMPLATE_IDS or fmt not in {"docx", "pdf"}:
         fail(422, "validation_error", "请选择有效模板和导出格式。")
     try:
         _, job = store.get_job(job_id)

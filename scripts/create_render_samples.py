@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from cvbuilder.core import check_generated_facts
-from cvbuilder.templates import convert_to_pdf, fill_template
+from cvbuilder.templates import PUBLIC_TEMPLATES, SECTIONS, convert_to_pdf, fill_template, fill_template_modular
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,6 +48,7 @@ def main():
     empty = dict(short)
     empty.update({"summary": [], "education": [], "work": [], "projects": [], "skills": [], "certificates": []})
     variants = {"short": short, "long": long, "empty": empty}
+    modern_ids = {item["id"] for item in PUBLIC_TEMPLATES}
     for template in sorted((ROOT / "templates").glob("template-*.docx")):
         for name, data in variants.items():
             path = output_dir / f"{name}-{template.stem}.docx"
@@ -57,7 +58,10 @@ def main():
                 continue
             if path.exists() or pdf_path.exists():
                 raise FileExistsError(f"样例输出不完整且目标已存在，为避免覆盖请换目录: {path}")
-            fill_template(template, data, path)
+            if template.stem in modern_ids:
+                fill_template_modular(template, data, list(SECTIONS), {}, path)
+            else:
+                fill_template(template, data, path)
             convert_to_pdf(path)
             print(path)
 

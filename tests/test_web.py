@@ -255,6 +255,29 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("虚构测试经历", "\n".join(paragraphs))
         self.assertNotIn("{{", "\n".join(paragraphs))
 
+    def test_sidebar_template_exports_contact_and_skills_in_the_left_column(self):
+        from fastapi.testclient import TestClient
+        from docx import Document
+        from io import BytesIO
+
+        client = TestClient(self.web.app, base_url="http://127.0.0.1")
+        response = client.post("/api/export", json={
+            "template_id": "template-06", "format": "docx",
+            "resume_content": {
+                "personal": {"name": "虚构测试候选人", "email": "draft@example.invalid"},
+                "work": [{"title": "虚构测试岗位"}],
+                "skills": [{"title": "虚构测试技能"}],
+            },
+            "module_order": ["work", "skills"],
+            "visual_settings": {"template_id": "template-06", "page_width": "narrow"},
+        })
+        self.assertEqual(response.status_code, 200)
+        doc = Document(BytesIO(response.content))
+        self.assertEqual(doc.paragraphs[0].text, "虚构测试候选人")
+        left, right = doc.tables[0].rows[0].cells
+        self.assertEqual(left.text, "draft@example.invalid\n技能\n虚构测试技能")
+        self.assertEqual(right.text, "工作经历\n虚构测试岗位")
+
     def test_http_page_templates_validation_and_loopback_host(self):
         from fastapi.testclient import TestClient
         client = TestClient(self.web.app, base_url="http://127.0.0.1")
@@ -263,7 +286,8 @@ class WebContractTests(unittest.TestCase):
         self.assertIn("简历工作台", page.text)
         self.assertIn('id="root"', page.text)
         self.assertIn('/static/vue/app.js', page.text)
-        self.assertEqual(len(client.get("/api/templates").json()), 3)
+        self.assertEqual([item["name"] for item in client.get("/api/templates").json()],
+                         ["经典单栏", "现代单栏", "侧栏双栏", "创意版"])
         invalid = client.put("/api/resume", json={"not": "a resume"})
         self.assertEqual(invalid.status_code, 422)
         self.assertEqual(invalid.json()["error"]["code"], "validation_error")
