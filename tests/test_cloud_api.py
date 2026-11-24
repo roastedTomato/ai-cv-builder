@@ -137,7 +137,7 @@ class CloudApiTests(unittest.TestCase):
         class Store:
             user_id = "fictional-user-a"
             def __init__(self):
-                self.session = {"id": "fictional-session", "status": "awaiting_answer", "turns": [{"id": "fictional-turn", "question": "虚构测试问题", "answer": None}]}
+                self.session = {"id": "fictional-session", "status": "awaiting_answer", "turns": [{"id": f"fictional-turn-{i}", "question": "虚构测试问题", "answer": None} for i in range(12)]}
             def get_interview(self, session_id):
                 return self.session
             def update_interview(self, session_id, patch, expected_status=None):
@@ -148,9 +148,36 @@ class CloudApiTests(unittest.TestCase):
             self.assertEqual(store.session["turns"][0]["answer"], "虚构测试回答")
             return {"task_id": "fictional-task", "status": "queued"}
         with patch("cvbuilder.cloud._task", side_effect=dispatch):
-            result = cloud.answer_interview("fictional-session", {"answer": "虚构测试回答"}, store)
+            result = cloud.answer_interview("fictional-session", {"turn_id": "fictional-turn-0", "answer": "虚构测试回答"}, store)
         self.assertEqual(result["status"], "queued")
         self.assertEqual(store.session["status"], "feedback_pending")
+
+    def test_interview_drafts_and_bulk_submit_only_unrated_answers(self):
+        class Store:
+            def __init__(self):
+                self.session = {"id": "fictional-session", "status": "awaiting_answer", "turns": [
+                    {"id": f"fictional-turn-{i}", "question": "虚构测试问题", "answer": None, "feedback": None}
+                    for i in range(12)]}
+            def get_interview(self, session_id):
+                return self.session
+            def update_interview(self, session_id, patch, expected_status=None):
+                self.session = {**self.session, **patch}
+                return self.session
+        store = Store()
+        cloud.save_interview_draft("fictional-session", {"turn_id": "fictional-turn-0", "answer": "虚构草稿"}, store)
+        self.assertEqual(store.session["turns"][0]["answer"], "虚构草稿")
+        self.assertNotIn("answered_at", store.session["turns"][0])
+        with self.assertRaises(HTTPException) as incomplete:
+            cloud.answer_interview("fictional-session", {"turn_ids": [f"fictional-turn-{i}" for i in range(12)]}, store)
+        self.assertEqual(incomplete.exception.status_code, 422)
+        for i, turn in enumerate(store.session["turns"]):
+            turn["answer"] = f"虚构测试回答 {i}"
+        store.session["turns"][0]["feedback"] = {"evaluation": "清楚。"}
+        with patch("cvbuilder.cloud._task", return_value={"task_id": "fictional-task"}) as queue:
+            cloud.answer_interview("fictional-session", {"turn_ids": [f"fictional-turn-{i}" for i in range(12)]}, store)
+        self.assertFalse(store.session["turns"][0].get("answered_at"))
+        self.assertTrue(all(turn.get("answered_at") for turn in store.session["turns"][1:]))
+        self.assertEqual(queue.call_args.args[2]["turn_ids"], [f"fictional-turn-{i}" for i in range(1, 12)])
 
     def test_reference_can_be_queued_before_answer(self):
         class Store:

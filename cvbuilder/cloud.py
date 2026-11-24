@@ -252,21 +252,61 @@ def start_interview(job_id: str, version_id: str, store: CloudStore = Depends(cl
 
 @app.post("/api/interviews/{session_id}/answers")
 def answer_interview(session_id: str, payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
-    answer = payload.get("answer")
-    if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
-        fail(422, "validation_error", "请填写不超过 4000 字的回答。")
     session = store.get_interview(session_id)
     if session is None:
         fail(404, "not_found", "面试记录不存在。")
     turns = session.get("turns") or []
-    if session.get("status") != "awaiting_answer" or not turns or turns[-1].get("answer"):
-        fail(409, "invalid_state", "当前没有待回答的问题。")
-    turns[-1] = {**turns[-1], "answer": answer.strip(), "answered_at": datetime.now(timezone.utc).isoformat()}
+    if session.get("status") not in {"awaiting_answer", "failed"} or len(turns) != 12:
+        fail(409, "invalid_state", "当前没有待评价的问题。")
+    turn_id = payload.get("turn_id")
+    turn_ids = payload.get("turn_ids")
+    if turn_ids is not None:
+        if not isinstance(turn_ids, list) or len(turn_ids) != 12 or not all(isinstance(value, str) for value in turn_ids) or set(turn_ids) != {turn["id"] for turn in turns}:
+            fail(422, "validation_error", "请填写全部 12 题后统一提交。")
+        for turn in turns:
+            if not turn.get("feedback") and not (turn.get("answer") or "").strip():
+                fail(422, "validation_error", "请填写全部 12 题后统一提交。")
+        selected = [turn for turn in turns if not turn.get("feedback")]
+    else:
+        selected = [turn for turn in turns if turn["id"] == turn_id]
+        if len(selected) != 1 or selected[0].get("feedback"):
+            fail(409, "invalid_state", "此题已评价或不存在。")
+        answer = payload.get("answer")
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
+            fail(422, "validation_error", "请填写不超过 4000 字的回答。")
+        selected[0]["answer"] = answer.strip()
+    if not selected:
+        return session
+    now = datetime.now(timezone.utc).isoformat()
+    selected_ids = {turn["id"] for turn in selected}
+    turns = [{**turn, "answer": (turn.get("answer") or "").strip(),
+              "answered_at": turn.get("answered_at") or now} if turn["id"] in selected_ids else turn for turn in turns]
     try:
-        store.update_interview(session_id, {"turns": turns, "status": "feedback_pending"}, expected_status="awaiting_answer")
+        store.update_interview(session_id, {"turns": turns, "status": "feedback_pending"}, expected_status=session["status"])
     except ValueError:
         fail(409, "conflict", "面试状态已变化，请刷新后重试。")
-    return _task(store, "interview_feedback", {"session_id": session_id})
+    return _task(store, "interview_feedback", {"session_id": session_id, "turn_ids": [turn["id"] for turn in selected]})
+
+
+@app.patch("/api/interviews/{session_id}/drafts")
+def save_interview_draft(session_id: str, payload: dict[str, Any], store: CloudStore = Depends(cloud_store)):
+    answer = payload.get("answer")
+    if not isinstance(answer, str) or len(answer) > 4000:
+        fail(422, "validation_error", "草稿不能超过 4000 字。")
+    session = store.get_interview(session_id)
+    if session is None:
+        fail(404, "not_found", "面试记录不存在。")
+    turns = session.get("turns") or []
+    if session.get("status") not in {"awaiting_answer", "failed"}:
+        fail(409, "invalid_state", "当前不能保存草稿。")
+    selected = [turn for turn in turns if turn["id"] == payload.get("turn_id")]
+    if len(selected) != 1 or selected[0].get("answered_at") or selected[0].get("feedback"):
+        fail(409, "invalid_state", "此题不能保存草稿。")
+    selected[0]["answer"] = answer
+    try:
+        return store.update_interview(session_id, {"turns": turns}, expected_status=session["status"])
+    except ValueError:
+        fail(409, "conflict", "面试状态已变化，请刷新后重试。")
 
 
 @app.post("/api/interviews/{session_id}/reference")
@@ -306,11 +346,8 @@ def next_interview(session_id: str, store: CloudStore = Depends(cloud_store)):
         fail(404, "not_found", "面试记录不存在。")
     turns = session.get("turns") or []
     status = session.get("status")
-    if status == "failed" and turns and turns[-1].get("answer") and not turns[-1].get("feedback"):
-        store.update_interview(session_id, {"status": "feedback_pending"}, expected_status="failed")
-        return _task(store, "interview_feedback", {"session_id": session_id})
-    if status not in {"feedback_ready", "failed"} or len(turns) >= 12:
-        fail(409, "invalid_state", "当前不能进入下一题。")
+    if status != "failed" or turns:
+        fail(409, "invalid_state", "本场题目已生成。")
     store.update_interview(session_id, {"status": "question_pending"}, expected_status=status)
     return _task(store, "interview_question", {"session_id": session_id})
 

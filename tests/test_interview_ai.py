@@ -119,6 +119,35 @@ class InterviewAITests(unittest.TestCase):
             with self.subTest(category=category), patch("cvbuilder.interview_ai._call", return_value={"question": "请回答测试问题", "reference_answer": "请根据已确认经历作答。"}):
                 self.assertEqual(interview_ai.generate_question(session, self.resume)["category"], category)
 
+    def test_generates_twelve_questions_and_safe_references_in_one_request(self):
+        captured = []
+        questions = [{"category": interview_ai.QUESTION_CATEGORIES[i % 4],
+                      "question": f"虚构测试问题 {i + 1}？",
+                      "reference_answer": "我掌握量子计算。" if i == 0 else "我维护测试用例。"}
+                     for i in range(12)]
+        def fake_call(name, instructions, payload, fields):
+            captured.append((name, instructions, payload, fields))
+            return {"questions": questions}
+        with patch("cvbuilder.interview_ai._call", side_effect=fake_call):
+            result = interview_ai.generate_questions(self.session, self.resume)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(len(result), 12)
+        self.assertIn("通顺", captured[0][1])
+        self.assertNotIn("量子计算", result[0]["reference_answer"])
+        self.assertIn("维护测试用例", result[0]["reference_answer"])
+
+    def test_rejects_incomplete_or_duplicate_question_set(self):
+        questions = [{"category": interview_ai.QUESTION_CATEGORIES[i % 4],
+                      "question": f"虚构测试问题 {i + 1}？", "reference_answer": "我维护测试用例。"}
+                     for i in range(12)]
+        with patch("cvbuilder.interview_ai._call", return_value={"questions": questions[:-1]}):
+            with self.assertRaises(ai.ModelResponseError):
+                interview_ai.generate_questions(self.session, self.resume)
+        questions[1]["question"] = questions[0]["question"]
+        with patch("cvbuilder.interview_ai._call", return_value={"questions": questions}):
+            with self.assertRaises(ai.ModelResponseError):
+                interview_ai.generate_questions(self.session, self.resume)
+
 
 if __name__ == "__main__":
     unittest.main()

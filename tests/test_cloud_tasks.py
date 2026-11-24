@@ -292,8 +292,8 @@ class CloudTaskTests(unittest.TestCase):
         self.store.interviews[session_id] = {
             "id": session_id, "status": "new", "job_text": "虚构招聘要求", "resume_content": {}, "turns": []}
         self.store.queue("interview_question", {"session_id": session_id})
-        with patch("cvbuilder.cloud_tasks.interview_ai.generate_question",
-                   return_value={"question": "请做自我介绍。", "category": "自我介绍", "reference_answer": "请依据已确认经历介绍自己。"}):
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_questions",
+                   return_value=[{"question": "请做自我介绍。", "category": "自我介绍", "reference_answer": "请依据已确认经历介绍自己。"}] * 12):
             first = self.run_task()
         self.assertEqual(first["status"], "succeeded")
         self.assertEqual(self.store.interviews[session_id]["status"], "awaiting_answer")
@@ -302,14 +302,14 @@ class CloudTaskTests(unittest.TestCase):
         self.assertEqual(turn["reference_answer"], "请依据已确认经历介绍自己。")
         self.assertIsNone(turn["answer"])
         self.store.update_interview(session_id, {"status": "feedback_pending",
-            "turns": [{**turn, "answer": "虚构测试回答"}]}, expected_status="awaiting_answer")
-        self.store.queue("interview_feedback", {"session_id": session_id}, "fictional-feedback")
+            "turns": [{**turn, "answer": "虚构测试回答", "answered_at": "2026-01-01T00:00:00+00:00"}]}, expected_status="awaiting_answer")
+        self.store.queue("interview_feedback", {"session_id": session_id, "turn_ids": [turn["id"]]}, "fictional-feedback")
         feedback = {"evaluation": "表达清楚。", "answer_points": "先概括再举例。"}
         with patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback", return_value=feedback):
             second = self.run_task("fictional-feedback")
         self.assertEqual(second["status"], "succeeded")
         saved = self.store.interviews[session_id]
-        self.assertEqual(saved["status"], "feedback_ready")
+        self.assertEqual(saved["status"], "awaiting_answer")
         self.assertEqual(saved["turns"][-1]["answer"], "虚构测试回答")
         self.assertEqual(saved["turns"][-1]["feedback"], feedback)
         self.assertIsNone(saved["turns"][-1]["follow_up"])
@@ -319,8 +319,8 @@ class CloudTaskTests(unittest.TestCase):
         session_id = "fictional-interview"
         self.store.interviews[session_id] = {"id": session_id, "status": "feedback_pending",
             "job_text": "虚构要求", "resume_content": {}, "turns": [
-                {"id": "fictional-turn", "question": "请介绍项目", "answer": "虚构测试回答", "feedback": None}]}
-        self.store.queue("interview_feedback", {"session_id": session_id})
+                {"id": "fictional-turn", "question": "请介绍项目", "answer": "虚构测试回答", "answered_at": "2026-01-01T00:00:00+00:00", "feedback": None}]}
+        self.store.queue("interview_feedback", {"session_id": session_id, "turn_ids": ["fictional-turn"]})
         with self.assertLogs("cvbuilder.cloud_tasks", level="ERROR") as logs, \
              patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback", side_effect=RuntimeError("private-answer-and-secret")):
             result = self.run_task()
@@ -332,12 +332,49 @@ class CloudTaskTests(unittest.TestCase):
         self.assertNotIn("private-answer-and-secret", "\n".join(logs.output))
         self.assertNotIn("虚构测试回答", "\n".join(logs.output))
 
+    def test_bulk_feedback_failure_keeps_completed_feedback_for_retry(self):
+        session_id = "fictional-interview"
+        turns = [{"id": f"fictional-turn-{i}", "question": "虚构测试问题",
+                  "answer": f"虚构测试回答 {i}", "answered_at": "2026-01-01T00:00:00+00:00",
+                  "feedback": None} for i in range(2)]
+        self.store.interviews[session_id] = {"id": session_id, "status": "feedback_pending",
+                                             "job_text": "虚构要求", "resume_content": {}, "turns": turns}
+        self.store.queue("interview_feedback", {"session_id": session_id,
+                                                "turn_ids": [turn["id"] for turn in turns]})
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback",
+                   side_effect=[{"evaluation": "清楚。", "answer_points": "先概括。"}, RuntimeError("fictional failure")]):
+            result = self.run_task()
+        self.assertEqual(result["status"], "failed")
+        saved = self.store.interviews[session_id]
+        self.assertEqual(saved["status"], "failed")
+        self.assertEqual(saved["turns"][0]["feedback"]["evaluation"], "清楚。")
+        self.assertIsNone(saved["turns"][1]["feedback"])
+
+    def test_feedback_excludes_unsubmitted_drafts_from_ai_context(self):
+        session_id = "fictional-interview"
+        turns = [
+            {"id": "fictional-draft", "question": "虚构测试问题一", "answer": "未提交的虚构草稿", "feedback": None},
+            {"id": "fictional-submitted", "question": "虚构测试问题二", "answer": "已提交的虚构回答",
+             "answered_at": "2026-01-01T00:00:00+00:00", "feedback": None},
+        ]
+        self.store.interviews[session_id] = {"id": session_id, "status": "feedback_pending",
+                                             "job_text": "虚构要求", "resume_content": {}, "turns": turns}
+        self.store.queue("interview_feedback", {"session_id": session_id,
+                                                "turn_ids": ["fictional-submitted"]})
+        def evaluate(session, resume):
+            self.assertEqual([turn["id"] for turn in session["turns"]], ["fictional-submitted"])
+            return {"evaluation": "清楚。", "answer_points": "先概括。"}
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_feedback", side_effect=evaluate):
+            result = self.run_task()
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(self.store.interviews[session_id]["turns"][0]["answer"], "未提交的虚构草稿")
+
     def test_question_failure_identifies_generation_step_and_preserves_retry(self):
         session_id = "fictional-interview"
         self.store.interviews[session_id] = {"id": session_id, "status": "question_pending",
             "job_text": "虚构要求", "resume_content": {}, "turns": []}
         self.store.queue("interview_question", {"session_id": session_id})
-        with patch("cvbuilder.cloud_tasks.interview_ai.generate_question", side_effect=RuntimeError("fictional private content")):
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_questions", side_effect=RuntimeError("fictional private content")):
             result = self.run_task()
         self.assertEqual(result["error"]["message"], "问题与参考答案生成失败，请重试。")
         self.assertEqual(self.store.interviews[session_id]["status"], "failed")
@@ -351,7 +388,7 @@ class CloudTaskTests(unittest.TestCase):
         self.store.interviews[session_id] = {"id": session_id, "status": "new",
             "job_text": "虚构要求", "resume_content": {}, "turns": []}
         self.store.queue("interview_question", {"session_id": session_id})
-        with patch("cvbuilder.cloud_tasks.interview_ai.generate_question", side_effect=FictionalAuthFailure("fictional-secret")):
+        with patch("cvbuilder.cloud_tasks.interview_ai.generate_questions", side_effect=FictionalAuthFailure("fictional-secret")):
             result = self.run_task()
         self.assertEqual(result["error"]["code"], "model_auth_error")
         self.assertNotIn("fictional-secret", str(result))

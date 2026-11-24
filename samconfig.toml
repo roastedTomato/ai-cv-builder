@@ -1,0 +1,13 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "cvbuilder-sydney-test"
+resolve_s3 = true
+s3_prefix = "cvbuilder-sydney-test"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "BillingEmail=\"qianyu01234@outlook.com\" CognitoDomainPrefix=\"cvbuilder-sydney-test-349744180219\""
+image_repositories = ["ApiFunction=349744180219.dkr.ecr.ap-southeast-2.amazonaws.com/cvbuildersydneytest69f9db2c/apifunction51503098repo", "WorkerFunction=349744180219.dkr.ecr.ap-southeast-2.amazonaws.com/cvbuildersydneytest69f9db2c/workerfunction5fd3ab0brepo", "MigratorFunction=349744180219.dkr.ecr.ap-southeast-2.amazonaws.com/cvbuildersydneytest69f9db2c/migratorfunction1d46cf84repo"]
+
+[default.global.parameters]
+region = "ap-southeast-2"

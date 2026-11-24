@@ -63,6 +63,7 @@ export interface InterviewTurn {
   question?: string;
   reference_answer?: string;
   answer?: string | null;
+  answered_at?: string | null;
   feedback?: InterviewFeedback | null;
   follow_up?: string;
 }

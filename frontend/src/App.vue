@@ -111,12 +111,6 @@ async function refreshInterviews(jobId = selectedJobId.value): Promise<Interview
   if (request !== interviewRequest || selectedJobId.value !== jobId || !selectedJob.value) return null;
   let latest = list[0] ? await api<InterviewSession>(`/api/interviews/${encodeURIComponent(list[0].id)}`) : null;
   if (request !== interviewRequest || selectedJobId.value !== jobId || !selectedJob.value) return null;
-  if (latest?.status === 'awaiting_answer' && latest.turns?.at(-1)?.reference_answer?.startsWith('参考答题框架') && base.value) {
-    try {
-      await api(`/api/interviews/${encodeURIComponent(latest.id)}/reference`, { method: 'POST' });
-      latest = await api<InterviewSession>(`/api/interviews/${encodeURIComponent(latest.id)}`);
-    } catch { /* The saved question remains available. */ }
-  }
   if (request !== interviewRequest || selectedJobId.value !== jobId || !selectedJob.value) return null;
   currentInterview.value = latest;
   if (latest) sessionStorage.setItem('cv-selected-interview', latest.id);

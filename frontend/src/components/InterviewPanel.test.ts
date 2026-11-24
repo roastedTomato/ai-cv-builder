@@ -33,27 +33,27 @@ test('shows a fictional saved answer and the actual failure state', () => {
     id: 'fictional-session', job_title: '虚构测试岗位', version_number: 2,
     status: 'failed', turns: [{ id: 'fictional-turn', question: '虚构测试问题', answer: '虚构测试回答' }],
   });
-  expect(host.textContent).toContain('虚构测试回答');
+  expect(host.querySelector<HTMLTextAreaElement>('.interview-answer textarea')?.value).toBe('虚构测试回答');
   expect(host.textContent).toContain('回答反馈生成失败，回答已保存，请重试。');
-  expect(host.querySelector('#next-question')?.textContent).toBe('重试');
+  expect(host.querySelector('.interview-answer textarea')).not.toBeNull();
 });
 
-test('submits an answer only for the selected fictional session', async () => {
+test('submits an answer only for the selected fictional turn', async () => {
   const { host, api, onRefresh } = mount({
     id: 'fictional-session', job_title: '虚构测试岗位', version_number: 1,
     status: 'awaiting_answer', turns: [{ id: 'fictional-turn', question: '虚构测试问题', reference_answer: '虚构参考答案' }],
   });
   expect(host.querySelector('.reference-answer summary')?.textContent).toBe('参考回答要点');
   expect(host.querySelector('.reference-answer')?.textContent).toContain('虚构参考答案');
-  const textarea = host.querySelector<HTMLTextAreaElement>('#interview-answer');
+  const textarea = host.querySelector<HTMLTextAreaElement>('.interview-answer textarea');
   expect(textarea).not.toBeNull();
   textarea!.value = '虚构测试回答';
   textarea!.dispatchEvent(new Event('input', { bubbles: true }));
-  host.querySelector<HTMLFormElement>('#answer-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   await nextTick();
-  expect(api).toHaveBeenCalledWith('/api/interviews/fictional-session/answers', expect.objectContaining({
-    method: 'POST', body: JSON.stringify({ answer: '虚构测试回答' }),
-  }));
+  host.querySelector<HTMLButtonElement>('.interview-turn > button')!.click();
+  await vi.waitFor(() => expect(api).toHaveBeenCalledWith('/api/interviews/fictional-session/answers', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ turn_id: 'fictional-turn', answer: '虚构测试回答' }),
+  })));
   await vi.waitFor(() => expect(onRefresh).toHaveBeenCalled());
 });
 
@@ -75,4 +75,17 @@ test('shows only brief evaluation and answer points for fictional saved feedback
   for (const omitted of ['旧追问', '旧建议', '旧事实', '旧自述', '旧待确认建议']) {
     expect(host.textContent).not.toContain(omitted);
   }
+});
+
+test('submits all 12 fictional drafts for evaluation without opening references', async () => {
+  const turns = Array.from({ length: 12 }, (_, index) => ({
+    id: 'fictional-turn-' + index, question: '虚构问题 ' + index,
+    reference_answer: '虚构参考要点', answer: '虚构回答 ' + index,
+  }));
+  const { host, api } = mount({ id: 'fictional-session', status: 'awaiting_answer', turns });
+  expect(host.querySelectorAll('.reference-answer:not([open])')).toHaveLength(12);
+  host.querySelector<HTMLButtonElement>('#submit-all-answers')!.click();
+  await vi.waitFor(() => expect(api).toHaveBeenCalledWith('/api/interviews/fictional-session/answers', expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ turn_ids: turns.map(turn => turn.id) }),
+  })));
 });

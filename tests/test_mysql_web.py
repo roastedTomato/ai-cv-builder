@@ -38,9 +38,9 @@ class MySQLWebTests(unittest.TestCase):
         draft = {"summary": [{"text": "虚构测试岗位简介"}]}
         with patch.object(self.web, "store", resume_store), patch.object(self.web, "job_store", job_store), \
              patch.object(self.web.ai, "generate_resume_from_job_unchecked", return_value=draft), \
-             patch.object(interview_ai, "generate_question", return_value={
-                 "question": "虚构测试：请介绍经历", "category": "简历经历",
-                 "reference_answer": "虚构测试：据实回答"}):
+             patch.object(interview_ai, "generate_questions", return_value=[{
+                 "question": f"虚构测试：请介绍经历 {i}", "category": "简历经历",
+                 "reference_answer": "虚构测试：据实回答"} for i in range(1, 13)]):
             self.assertEqual(client.put("/api/resume", json=base).status_code, 200)
             company = client.post("/api/companies", json={"name": "虚构测试公司"}).json()
             job = client.post(f"/api/companies/{company['id']}/jobs", json={
@@ -58,7 +58,7 @@ class MySQLWebTests(unittest.TestCase):
             self.assertEqual(edited.json()["job_text"], "虚构测试新要求")
             session = client.post(f"/api/jobs/{job['id']}/versions/{first['id']}/interviews").json()
             self.assertEqual(session["job_text"], "虚构测试旧要求")
-            self.assertEqual(session["turns"][0]["question"], "虚构测试：请介绍经历")
+            self.assertEqual(session["turns"][0]["question"], "虚构测试：请介绍经历 1")
             self.assertEqual(MySQLResumeStore(user_id).load(), base)
             reopened = MySQLJobStore(user_id)
             self.assertEqual([v["number"] for v in reopened.load()["companies"][0]["jobs"][0]["versions"]], [1, 2])

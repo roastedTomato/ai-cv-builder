@@ -306,18 +306,18 @@ async def get_interview(session_id: str):
 
 def _local_question(session_id: str, expected_status: str) -> dict[str, Any]:
     from datetime import datetime, timezone
-    from .interview_ai import generate_question
+    from .interview_ai import generate_questions
     session = job_store.get_interview(session_id)
     resume = store.load()
     if not resume:
         raise HTTPException(409, detail={"code": "resume_required", "message": "请先保存基础简历。"})
     try:
-        generated = generate_question(session, resume)
-        turn = {"id": uuid.uuid4().hex, "question": generated["question"],
-                "category": generated["category"], "reference_answer": generated["reference_answer"],
-                "answer": None, "feedback": None,
-                "follow_up": None, "created_at": datetime.now(timezone.utc).isoformat()}
-        return job_store.update_interview(session_id, {"turns": [*(session.get("turns") or []), turn],
+        generated = generate_questions(session, resume)
+        turns = [{"id": uuid.uuid4().hex, "question": item["question"],
+                  "category": item["category"], "reference_answer": item["reference_answer"],
+                  "answer": None, "feedback": None, "follow_up": None,
+                  "created_at": datetime.now(timezone.utc).isoformat()} for item in generated]
+        return job_store.update_interview(session_id, {"turns": turns,
                                                       "status": "awaiting_answer", "error": None}, expected_status=expected_status)
     except Exception as exc:
         logger.error("Interview question failed type=%s", type(exc).__name__)
@@ -374,18 +374,37 @@ async def reference_interview(session_id: str):
 async def answer_interview(session_id: str, payload: dict[str, Any]):
     from datetime import datetime, timezone
     from .interview_ai import generate_feedback
-    answer = payload.get("answer")
-    if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
-        raise HTTPException(422, detail={"code": "validation_error", "message": "请填写不超过 4000 字的回答。"})
     session = job_store.get_interview(session_id)
     if session is None:
         raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
     turns = session.get("turns") or []
-    if session.get("status") != "awaiting_answer" or not turns or turns[-1].get("answer"):
-        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前没有待回答的问题。"})
-    turns[-1] = {**turns[-1], "answer": answer.strip(), "answered_at": datetime.now(timezone.utc).isoformat()}
+    if session.get("status") not in {"awaiting_answer", "failed"} or len(turns) != 12:
+        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前不能提交回答。"})
+    turn_id = payload.get("turn_id")
+    turn_ids = payload.get("turn_ids")
+    if isinstance(turn_ids, list):
+        if len(turn_ids) != 12 or set(turn_ids) != {turn["id"] for turn in turns}:
+            raise HTTPException(422, detail={"code": "validation_error", "message": "请先填写全部 12 题。"})
+        pending_ids = [turn["id"] for turn in turns if not turn.get("feedback")]
+    elif isinstance(turn_id, str):
+        pending_ids = [turn_id]
+    else:
+        raise HTTPException(422, detail={"code": "validation_error", "message": "请选择要提交的题目。"})
+    if not pending_ids:
+        return session
+    answer = payload.get("answer")
+    for index, turn in enumerate(turns):
+        if turn["id"] not in pending_ids:
+            continue
+        if turn.get("feedback"):
+            raise HTTPException(409, detail={"code": "invalid_state", "message": "该题已评价。"})
+        text = answer if turn["id"] == turn_id else turn.get("answer")
+        if not isinstance(text, str) or not text.strip() or len(text) > 4000:
+            raise HTTPException(422, detail={"code": "validation_error", "message": "请填写不超过 4000 字的回答。"})
+        turns[index] = {**turn, "answer": text.strip(),
+                        "answered_at": turn.get("answered_at") or datetime.now(timezone.utc).isoformat()}
     try:
-        session = job_store.update_interview(session_id, {"turns": turns, "status": "feedback_pending"}, expected_status="awaiting_answer")
+        session = job_store.update_interview(session_id, {"turns": turns, "status": "feedback_pending"}, expected_status=session["status"])
     except ValueError as exc:
         raise HTTPException(409, detail={"code": "conflict", "message": "面试状态已变化，请刷新后重试。"}) from exc
     resume = store.load()
@@ -393,9 +412,13 @@ async def answer_interview(session_id: str, payload: dict[str, Any]):
         job_store.update_interview(session_id, {"status": "failed"}, expected_status="feedback_pending")
         raise HTTPException(409, detail={"code": "resume_required", "message": "基础简历已删除，回答已保存。"})
     try:
-        feedback = generate_feedback(session, resume)
-        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": None}
-        return job_store.update_interview(session_id, {"turns": turns, "status": "feedback_ready", "error": None}, expected_status="feedback_pending")
+        for turn_id in pending_ids:
+            current = next(turn for turn in session["turns"] if turn["id"] == turn_id)
+            feedback = generate_feedback({**session, "turns": [current]}, resume)
+            updated_turns = [{**turn, "feedback": feedback, "follow_up": None} if turn["id"] == turn_id else turn
+                             for turn in session["turns"]]
+            session = job_store.update_interview(session_id, {"turns": updated_turns}, expected_status="feedback_pending")
+        return job_store.update_interview(session_id, {"status": "awaiting_answer", "error": None}, expected_status="feedback_pending")
     except Exception as exc:
         logger.error("Interview feedback failed type=%s", type(exc).__name__)
         error = _interview_error(exc, "回答反馈生成失败，回答已保存，请重试。")
@@ -408,32 +431,29 @@ async def next_interview(session_id: str):
     session = job_store.get_interview(session_id)
     if session is None:
         raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
-    turns = session.get("turns") or []
-    status = session.get("status")
-    if status == "failed" and turns and turns[-1].get("answer") and not turns[-1].get("feedback"):
-        return await answer_interview_retry(session_id, session)
-    if status not in {"feedback_ready", "failed"} or len(turns) >= 12:
-        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前不能进入下一题。"})
-    job_store.update_interview(session_id, {"status": "question_pending"}, expected_status=status)
-    return _local_question(session_id, "question_pending")
+    if session["status"] == "failed" and not session["turns"]:
+        job_store.update_interview(session_id, {"status": "question_pending"}, expected_status="failed")
+        return _local_question(session_id, "question_pending")
+    raise HTTPException(409, detail={"code": "invalid_state", "message": "题目已全部生成。"})
 
 
-async def answer_interview_retry(session_id: str, session: dict[str, Any]):
-    from .interview_ai import generate_feedback
-    session = job_store.update_interview(session_id, {"status": "feedback_pending"}, expected_status="failed")
+@app.patch("/api/interviews/{session_id}/drafts")
+async def save_interview_draft(session_id: str, payload: dict[str, Any]):
+    session = job_store.get_interview(session_id)
+    if session is None:
+        raise HTTPException(404, detail={"code": "not_found", "message": "面试记录不存在。"})
+    if session["status"] not in {"awaiting_answer", "failed"}:
+        raise HTTPException(409, detail={"code": "invalid_state", "message": "当前不能保存草稿。"})
+    answer, turn_id = payload.get("answer"), payload.get("turn_id")
+    if not isinstance(answer, str) or len(answer) > 4000:
+        raise HTTPException(422, detail={"code": "validation_error", "message": "回答不能超过 4000 字。"})
+    if not any(turn["id"] == turn_id and not turn.get("answered_at") for turn in session["turns"]):
+        raise HTTPException(409, detail={"code": "invalid_state", "message": "该题不能编辑。"})
+    turns = [{**turn, "answer": answer} if turn["id"] == turn_id else turn for turn in session["turns"]]
     try:
-        resume = store.load()
-        if not resume:
-            raise ValueError("基础简历不存在")
-        feedback = generate_feedback(session, resume)
-        turns = session["turns"]
-        turns[-1] = {**turns[-1], "feedback": feedback, "follow_up": None}
-        return job_store.update_interview(session_id, {"turns": turns, "status": "feedback_ready", "error": None}, expected_status="feedback_pending")
-    except Exception as exc:
-        logger.error("Interview feedback retry failed type=%s", type(exc).__name__)
-        error = _interview_error(exc, "回答反馈生成失败，回答已保存，请重试。")
-        job_store.update_interview(session_id, {"status": "failed", "error": error}, expected_status="feedback_pending")
-        raise HTTPException(502, detail=error) from exc
+        return job_store.update_interview(session_id, {"turns": turns}, expected_status=session["status"])
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "conflict", "message": "面试状态已变化，请刷新后重试。"}) from exc
 
 
 @app.post("/api/interviews/{session_id}/end")

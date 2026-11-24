@@ -156,21 +156,23 @@ def _interview_question(store: Any, task_input: dict[str, Any]) -> dict[str, Any
     if session is None:
         raise TaskFailure("not_found", "面试记录不存在。")
     status = session.get("status")
-    if status not in {"new", "question_pending"}:
-        raise TaskFailure("invalid_state", "当前面试状态不能生成下一题。")
+    if status not in {"new", "question_pending"} or session.get("turns"):
+        raise TaskFailure("invalid_state", "当前面试状态不能生成题目。")
     resume = store.load_resume()
     if not resume:
         raise TaskFailure("resume_required", "请先保存基础简历。")
     _load_openai_key()
-    question = interview_ai.generate_question(session, resume)
-    turn = {"id": uuid.uuid4().hex, "category": question["category"],
-            "question": question["question"], "reference_answer": question["reference_answer"],
-            "answer": None, "feedback": None,
-            "follow_up": None, "created_at": datetime.now(timezone.utc).isoformat()}
+    questions = interview_ai.generate_questions(session, resume)
+    if len(questions) != 12:
+        raise TaskFailure("invalid_response", "题目生成数量不正确，请重试。")
+    turns = [{"id": uuid.uuid4().hex, "category": question["category"],
+              "question": question["question"], "reference_answer": question["reference_answer"],
+              "answer": None, "feedback": None, "follow_up": None,
+              "created_at": datetime.now(timezone.utc).isoformat()} for question in questions]
     updated = store.update_interview(session_id,
-        {"turns": [*(session.get("turns") or []), turn], "status": "awaiting_answer", "error": None},
+        {"turns": turns, "status": "awaiting_answer", "error": None},
         expected_status=status)
-    return {"session_id": session_id, "turn_id": turn["id"], "status": updated["status"]}
+    return {"session_id": session_id, "status": updated["status"]}
 
 
 def _interview_reference(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:
@@ -201,20 +203,28 @@ def _interview_feedback(store: Any, task_input: dict[str, Any]) -> dict[str, Any
     if session.get("status") != "feedback_pending":
         raise TaskFailure("invalid_state", "当前面试状态不能生成反馈。")
     turns = session.get("turns") or []
-    if not turns or not turns[-1].get("answer"):
+    turn_ids = task_input.get("turn_ids")
+    if not isinstance(turn_ids, list) or not turn_ids or len(set(turn_ids)) != len(turn_ids):
         raise TaskFailure("invalid_state", "面试回答尚未提交。")
     resume = store.load_resume()
     if not resume:
         raise TaskFailure("resume_required", "请先保存基础简历。")
     _load_openai_key()
-    feedback = interview_ai.generate_feedback(session, resume)
-    revised = [*turns[:-1], {**turns[-1], "feedback": feedback,
-                              "follow_up": None,
-                              "feedback_at": datetime.now(timezone.utc).isoformat()}]
+    for turn_id in turn_ids:
+        index = next((i for i, turn in enumerate(turns) if turn["id"] == turn_id), None)
+        if index is None or not turns[index].get("answered_at"):
+            raise TaskFailure("invalid_state", "面试回答尚未提交。")
+        if turns[index].get("feedback"):
+            continue
+        # The AI helper evaluates the last turn in its session view.
+        view = {**session, "turns": [turn for turn in turns[:index + 1] if turn.get("answered_at")]}
+        feedback = interview_ai.generate_feedback(view, resume)
+        turns[index] = {**turns[index], "feedback": feedback, "follow_up": None,
+                        "feedback_at": datetime.now(timezone.utc).isoformat()}
+        session = store.update_interview(session_id, {"turns": turns}, expected_status="feedback_pending")
     updated = store.update_interview(session_id,
-        {"turns": revised, "status": "feedback_ready", "error": None},
-        expected_status="feedback_pending")
-    return {"session_id": session_id, "turn_id": revised[-1]["id"], "status": updated["status"]}
+        {"status": "awaiting_answer", "error": None}, expected_status="feedback_pending")
+    return {"session_id": session_id, "status": updated["status"]}
 
 
 def _generate(store: Any, task_input: dict[str, Any]) -> dict[str, Any]:

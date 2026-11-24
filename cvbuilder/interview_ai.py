@@ -1,4 +1,4 @@
-"""One-question-at-a-time interview prompts with explicit fact provenance."""
+"""Interview prompts with explicit fact provenance."""
 from __future__ import annotations
 
 import json
@@ -85,9 +85,18 @@ def _call(name: str, instructions: str, payload: dict[str, Any], fields: dict[st
         value = result[key]
         if spec["type"] == "string" and (not isinstance(value, str) or len(value) > 4000):
             raise ai.ModelResponseError("模型面试文本无效")
-        if spec["type"] == "array" and (not isinstance(value, list) or len(value) > 20 or
-                                         any(not isinstance(item, str) or len(item) > 1000 for item in value)):
-            raise ai.ModelResponseError("模型面试列表无效")
+        if spec["type"] == "array":
+            if not isinstance(value, list) or len(value) > 20:
+                raise ai.ModelResponseError("模型面试列表无效")
+            item_type = spec.get("items", {}).get("type", "string")
+            if item_type == "string" and any(not isinstance(item, str) or len(item) > 1000 for item in value):
+                raise ai.ModelResponseError("模型面试列表无效")
+            if item_type == "object" and any(
+                not isinstance(item, dict) or set(item) != set(spec["items"]["properties"]) or
+                any(not isinstance(part, str) or len(part) > 4000 for part in item.values())
+                for item in value
+            ):
+                raise ai.ModelResponseError("模型面试列表无效")
     return result
 
 
@@ -233,6 +242,43 @@ def generate_question(session: dict[str, Any], confirmed_resume: dict[str, Any])
     return {"question": question, "category": category,
             "reference_answer": _reference_or_fallback(result["reference_answer"], session, catalog,
                                                        confirmed_resume, category, question)}
+
+
+def generate_questions(session: dict[str, Any], confirmed_resume: dict[str, Any]) -> list[dict[str, str]]:
+    """Generate the complete interview and its references in one model request."""
+    catalog = _confirmed_catalog(confirmed_resume)
+    fields = {"questions": {"type": "array", "items": {"type": "object", "properties": {
+        "category": {"type": "string"}, "question": {"type": "string"},
+        "reference_answer": {"type": "string"},
+    }, "required": ["category", "question", "reference_answer"], "additionalProperties": False}}}
+    result = _call(
+        "interview_questions",
+        "你是中文模拟面试官。一次生成恰好 12 道互不重复的问题，按自我介绍、简历经历、行为问题、职位相关四类循环排列，每类三题。"
+        "每题同时生成供用户答题前查看的参考回答要点。要点须用通顺、连贯的完整句子，以第一人称示范如何回答，"
+        "依据 confirmed_base_resume_sections 中最相关的已确认经历；有相关事实时引用 confirmed_base_resume_facts 的原文。"
+        "已确认的个人事实仅来自 confirmed_base_resume_facts。岗位简历草稿和招聘要求仅供出题，不能作为已确认经历、技能、证书或数字。"
+        "不要在问题中断言未经确认的经历；若缺少作答所需的个人事实，在参考要点中用方括号提示据实补充，禁止编造。",
+        {"confirmed_base_resume_facts": catalog,
+         "confirmed_base_resume_sections": _confirmed_sections(confirmed_resume),
+         "unverified_selected_resume": session.get("resume_content") or {},
+         "job_requirements_snapshot": session.get("job_text") or ""},
+        fields,
+    )
+    questions = result["questions"]
+    if len(questions) != MAX_QUESTIONS:
+        raise ai.ModelResponseError("模型未返回完整的 12 道面试题")
+    seen: set[str] = set()
+    output = []
+    for index, item in enumerate(questions):
+        category = QUESTION_CATEGORIES[index % len(QUESTION_CATEGORIES)]
+        question = item["question"].strip()
+        if item["category"] != category or not question or question in seen:
+            raise ai.ModelResponseError("模型面试题目类别、内容或顺序无效")
+        seen.add(question)
+        output.append({"category": category, "question": question,
+                       "reference_answer": _reference_or_fallback(
+                           item["reference_answer"], session, catalog, confirmed_resume, category, question)})
+    return output
 
 
 def generate_reference_answer(session: dict[str, Any], confirmed_resume: dict[str, Any]) -> str:

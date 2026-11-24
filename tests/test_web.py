@@ -64,7 +64,7 @@ class WebContractTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             records = JobRecordStore(Path(folder))
             with patch.object(self.web, "job_store", records), patch.object(self.web.store, "load", return_value=confirmed), \
-                 patch.object(interview_ai, "generate_question", return_value={"question": "虚构测试：请自我介绍", "category": "自我介绍", "reference_answer": "请据实介绍已确认经历。"}), \
+                 patch.object(interview_ai, "generate_questions", return_value=[{"question": f"虚构测试：第{i}题", "category": "自我介绍", "reference_answer": "请据实介绍已确认经历。"} for i in range(1, 13)]), \
                  patch.object(interview_ai, "generate_feedback", return_value={"evaluation": "结构清晰", "answer_points": "背景、行动、结果"}):
                 company = records.add_company("虚构测试公司")
                 job = records.add_job(company["id"], "虚构测试职位", "旧版虚构要求")
@@ -74,26 +74,24 @@ class WebContractTests(unittest.TestCase):
                 self.assertEqual(client.patch(f"/api/jobs/{job['id']}", json={"title": "虚构测试职位", "job_text": "冲突要求", "expected_revision": 0}).status_code, 409)
                 session = client.post(f"/api/jobs/{job['id']}/versions/{version['id']}/interviews").json()
                 self.assertEqual(session["job_text"], "旧版虚构要求")
+                self.assertEqual(len(session["turns"]), 12)
                 self.assertEqual(session["turns"][0]["reference_answer"], "请据实介绍已确认经历。")
                 self.assertIsNone(session["turns"][0]["answer"])
-                generic_turn = {**session["turns"][0], "reference_answer": "参考答题框架（请按真实经历填写）：[真实经历]"}
-                records.update_interview(session["id"], {"turns": [generic_turn]}, expected_status="awaiting_answer")
-                upgraded = client.post(f"/api/interviews/{session['id']}/reference")
-                self.assertEqual(upgraded.status_code, 200)
-                self.assertIn("示例软件工作室", upgraded.json()["turns"][0]["reference_answer"])
-                old_turn = {key: value for key, value in session["turns"][0].items() if key != "reference_answer"}
-                records.update_interview(session["id"], {"turns": [old_turn]}, expected_status="awaiting_answer")
-                with patch.object(interview_ai, "generate_reference_answer", return_value="虚构测试：据实介绍经历"):
-                    backfilled = client.post(f"/api/interviews/{session['id']}/reference")
-                self.assertEqual(backfilled.status_code, 200)
-                self.assertEqual(backfilled.json()["turns"][0]["reference_answer"], "虚构测试：据实介绍经历")
-                self.assertIsNone(backfilled.json()["turns"][0]["answer"])
-                answered = client.post(f"/api/interviews/{session['id']}/answers", json={"answer": "虚构测试回答"})
+                draft = client.patch(f"/api/interviews/{session['id']}/drafts", json={"turn_id": session["turns"][1]["id"], "answer": "虚构草稿"}).json()
+                self.assertEqual(draft["turns"][1]["answer"], "虚构草稿")
+                self.assertNotIn("answered_at", draft["turns"][1])
+                answered = client.post(f"/api/interviews/{session['id']}/answers", json={"turn_id": session["turns"][0]["id"], "answer": "虚构测试回答"})
                 self.assertEqual(answered.status_code, 200)
                 self.assertEqual(answered.json()["turns"][0]["feedback"]["evaluation"], "结构清晰")
                 self.assertIsNone(answered.json()["turns"][0]["follow_up"])
-                self.assertEqual(answered.json()["turns"][0]["reference_answer"], "虚构测试：据实介绍经历")
-                self.assertEqual(client.post(f"/api/interviews/{session['id']}/next").status_code, 200)
+                self.assertEqual(answered.json()["turns"][0]["reference_answer"], "请据实介绍已确认经历。")
+                self.assertEqual(client.post(f"/api/interviews/{session['id']}/next").status_code, 409)
+                for turn in session["turns"][1:]:
+                    draft = client.patch(f"/api/interviews/{session['id']}/drafts", json={"turn_id": turn["id"], "answer": "虚构批量回答"})
+                    self.assertEqual(draft.status_code, 200)
+                batch = client.post(f"/api/interviews/{session['id']}/answers", json={"turn_ids": [turn["id"] for turn in session["turns"]]})
+                self.assertEqual(batch.status_code, 200)
+                self.assertTrue(all(turn["feedback"] for turn in batch.json()["turns"]))
                 self.assertEqual(client.post(f"/api/interviews/{session['id']}/end").json()["status"], "ended")
                 records.delete_version(job["id"], version["id"])
                 history = client.get(f"/api/interviews/{session['id']}").json()
@@ -114,7 +112,7 @@ class WebContractTests(unittest.TestCase):
             records = JobRecordStore(Path(folder))
             with patch.object(self.web, "job_store", records), \
                  patch.object(self.web.store, "load", return_value=read_json(ROOT / "fixtures/base-resume.sample.json")), \
-                 patch.object(interview_ai, "generate_question", side_effect=FictionalAuthFailure("fictional-secret")):
+                 patch.object(interview_ai, "generate_questions", side_effect=FictionalAuthFailure("fictional-secret")):
                 company = records.add_company("虚构测试公司")
                 job = records.add_job(company["id"], "虚构测试岗位", "虚构测试招聘要求")
                 version = records.create_version(company["id"], job["id"], {}, [], {})
