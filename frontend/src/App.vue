@@ -10,13 +10,20 @@ import ResumePreview from './components/ResumePreview.vue';
 import VersionGraph from './components/VersionGraph.vue';
 
 const colors = [
-  { value: '#2C5263', name: '蓝灰' }, { value: '#16766d', name: '青绿' },
-  { value: '#315f9b', name: '蓝色' }, { value: '#7a4b78', name: '紫色' },
-  { value: '#a45c34', name: '暖棕' },
+  { value: '#2C5263', name: '墨染蓝' }, { value: '#16766d', name: '青碧' },
+  { value: '#647a9e', name: '雾蓝' }, { value: '#707956', name: '苔绿' },
+  { value: '#7a4b78', name: '暮紫' }, { value: '#927559', name: '素纸' },
 ];
 const widths = [
-  { value: 'narrow', name: '窄幅' }, { value: 'standard', name: '标准' }, { value: 'wide', name: '宽幅' },
+  { value: 'narrow', name: '古典雅宋', width: '窄幅' },
+  { value: 'standard', name: '简约内敛', width: '标准' },
+  { value: 'wide', name: '现代留白', width: '宽幅' },
 ];
+const templateNames: Record<string, string> = {
+  'template-01': '书卷 · 清雅',
+  'template-02': '和纸 · 温润',
+  'template-03': '留白 · 现代',
+};
 const visualDefaults: VisualSettings = { template_id: 'template-01', color: '#2C5263', page_width: 'standard' };
 const snapshot = (version: Version | null) => version ? JSON.stringify({
   resume_content: version.resume_content, module_order: version.module_order,
@@ -477,9 +484,9 @@ async function refreshInterviewView() { await refreshInterviews(); }
 </script>
 
 <template>
-  <header>
-    <div><p class="eyebrow">基础简历与求职记录</p><h1>简历工作台</h1><p>按岗位生成、编辑和导出简历版本。</p></div>
-    <div><span class="local">● 测试环境</span><button id="auth-logout" type="button" :hidden="!cloud">退出登录</button></div>
+  <header class="atelier-header">
+    <div class="atelier-title"><h1>简历工作台</h1><span aria-hidden="true">／</span></div>
+    <div class="atelier-status"><span class="local">本地工作台</span><button id="auth-logout" type="button" :hidden="!cloud">退出登录</button></div>
   </header>
 
   <BaseResume :base="base" :on-base-change="onBaseChange" :api="api" :cloud="cloud"
@@ -487,13 +494,13 @@ async function refreshInterviewView() { await refreshInterviews(); }
 
   <div class="workspace" :class="{ 'interview-mode': activeTab === 'interview' }">
     <aside class="card navigation">
-      <div class="section-heading"><h2>公司与投递</h2><button id="add-company" class="secondary small" type="button" @click="companyFormOpen = !companyFormOpen">＋ 公司</button></div>
+      <div class="section-heading"><div><p class="panel-kicker">公司 · 职位 · 版本</p><h2>投递图谱</h2></div><button id="add-company" class="secondary small" type="button" @click="companyFormOpen = !companyFormOpen">＋ 公司</button></div>
       <form v-if="companyFormOpen" id="company-form" class="compact-form" @submit.prevent="createCompany">
         <input id="company-name" v-model="companyName" placeholder="公司名称" aria-label="公司名称" required />
         <button type="submit">添加</button>
       </form>
       <CompanyTree :companies="companies" :selected-company-id="selectedCompanyId" :selected-job-id="selectedJobId"
-        @select-company="selectCompany" @select-job="selectJob"
+        :selected-version-id="selectedVersionId" @select-company="selectCompany" @select-job="selectJob" @select-version="selectVersion"
         @rename-company="renameCompany" @delete-company="deleteCompany"
         @edit-job="editJob" @delete-job="deleteJob" @add-job="jobFormOpen = true" />
       <div v-if="jobFormOpen" id="job-form-wrap"><h3>添加岗位</h3>
@@ -575,24 +582,25 @@ async function refreshInterviewView() { await refreshInterviews(); }
     </section>
 
     <aside class="card appearance">
-      <section class="appearance-section"><h2>简历模板</h2><div id="template-cards" class="template-cards" role="group" aria-label="简历模板">
+      <div class="appearance-title"><p class="panel-kicker">模板 · 配色 · 导出</p><h2>风格工坊</h2></div>
+      <section class="appearance-section"><h3>简历模板</h3><div id="template-cards" class="template-cards" role="group" aria-label="简历模板">
         <button v-for="item in templates" :key="item.id" class="template-card" :class="{ selected: visual.template_id === item.id }"
           type="button" :aria-pressed="visual.template_id === item.id" :disabled="!currentVersion" @click="updateVisual('template_id', item.id)">
-          <span class="template-miniature" aria-hidden="true"><img v-if="/^template-0[1-3]$/.test(item.id)" :src="`/static/${item.id}-preview.png`" alt="" /></span>
-          <span>{{ item.name }}</span>
+          <span class="template-miniature" aria-hidden="true"><img v-if="templateNames[item.id]" :src="`/static/atelier-${item.id}.webp`" alt="" /></span>
+          <span>{{ templateNames[item.id] || item.name }}</span>
         </button>
       </div></section>
-      <section class="appearance-section"><h2>主题色</h2><div id="color-swatches" class="color-swatches" role="group" aria-label="主题颜色">
-        <button v-for="item in colors" :key="item.value" type="button" class="color-swatch"
+      <section class="appearance-section"><h3>主题配色</h3><div id="color-swatches" class="color-swatches" role="group" aria-label="主题颜色">
+        <button v-for="(item, index) in colors" :key="item.value" type="button" class="color-swatch"
           :class="{ selected: visual.color?.toLowerCase() === item.value.toLowerCase() }"
-          :style="{ '--swatch': item.value }" :aria-label="item.name" :aria-pressed="visual.color?.toLowerCase() === item.value.toLowerCase()"
-          :title="item.name" :disabled="!currentVersion" @click="updateVisual('color', item.value)" />
+          :style="{ '--swatch-position': `${index * 20}%` }" :aria-label="item.name" :aria-pressed="visual.color?.toLowerCase() === item.value.toLowerCase()"
+          :title="item.name" :disabled="!currentVersion" @click="updateVisual('color', item.value)"><span class="color-swatch-dot" aria-hidden="true" /><span class="color-swatch-name">{{ item.name }}</span></button>
       </div></section>
-      <section class="appearance-section"><h2>页面宽度</h2><div id="width-options" class="width-options" role="group" aria-label="页面宽度">
+      <section class="appearance-section"><h3>排版细节</h3><div id="width-options" class="width-options" role="group" aria-label="页面宽度">
         <button v-for="item in widths" :key="item.value" type="button" :class="{ selected: visual.page_width === item.value }"
-          :aria-pressed="visual.page_width === item.value" :disabled="!currentVersion" @click="updateVisual('page_width', item.value)">{{ item.name }}</button>
+          :aria-pressed="visual.page_width === item.value" :title="item.width" :aria-label="`${item.name}（${item.width}）`" :disabled="!currentVersion" @click="updateVisual('page_width', item.value)">{{ item.name }}</button>
       </div></section>
-      <section class="appearance-section"><h2>导出简历</h2><div class="export-buttons">
+      <section class="appearance-section export-section"><h3 class="visually-hidden">导出简历</h3><div class="export-buttons">
         <button id="export-pdf" type="button" :disabled="!currentVersion || editing || !!busy" @click="exportResume('pdf')">导出 PDF</button>
         <button id="export" class="secondary" type="button" :disabled="!currentVersion || editing || !!busy" @click="exportResume('docx')">导出 Word</button>
       </div></section>

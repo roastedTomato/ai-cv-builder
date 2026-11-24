@@ -13,14 +13,15 @@ const companies: Company[] = [
   { id: 'fictional-company-b', name: '虚构远山咨询', jobs: [] },
 ];
 
-test('company contains its jobs without version controls in the sidebar', async () => {
+test('company contains its jobs and compact version switches in the sidebar', async () => {
   const wrapper = mount(CompanyTree, { props: {
-    companies, selectedCompanyId: 'fictional-company-a', selectedJobId: 'fictional-job-a',
+    companies, selectedCompanyId: 'fictional-company-a', selectedJobId: 'fictional-job-a', selectedVersionId: 'fictional-v1',
   } });
   const branches = wrapper.findAll('.company-branch');
   expect(branches).toHaveLength(2);
   expect(branches[0].find('.company-select').text()).toContain('虚构星河科技');
   expect(branches[0].find('.job-select').text()).toBe('虚构产品经理');
-  expect(branches[0].findAll('.version-chip')).toHaveLength(0);
+  expect(branches[0].findAll('.job-version-bubble')).toHaveLength(2);
+  expect(branches[0].find('.job-version-bubble.selected').text()).toBe('V1');
   expect(branches[1].find('.company-children').attributes('hidden')).toBeDefined();
 });
